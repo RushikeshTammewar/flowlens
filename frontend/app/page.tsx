@@ -591,113 +591,214 @@ export default function Home() {
         style={{ padding: "80px 0", borderBottom: "1px solid var(--black)" }}
       >
         <div className="container">
-          <p className="label" style={{ marginBottom: 40 }}>
+          <p className="label" style={{ marginBottom: 16 }}>
             Your morning briefing
           </p>
-          <div
-            className="briefing-grid"
+          <h2
+            className="serif"
             style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 60,
-              alignItems: "start",
+              fontSize: 36,
+              marginBottom: 8,
+              letterSpacing: "-0.02em",
             }}
           >
-            <div>
-              <h2
-                className="serif"
-                style={{
-                  fontSize: 36,
-                  marginBottom: 16,
-                  letterSpacing: "-0.02em",
-                }}
-              >
-                Wake up to
-                <br />
-                <em>clarity</em>
-              </h2>
-              <p
-                style={{
-                  color: "var(--gray)",
-                  fontSize: 14,
-                  maxWidth: 340,
-                  marginBottom: 24,
-                }}
-              >
-                Every day, FlowLens sends you a briefing of what changed on your
-                site overnight. New bugs, fixed bugs, performance shifts — all
-                in one message.
-              </p>
-              <p
-                style={{
-                  color: "var(--gray)",
-                  fontSize: 13,
-                }}
-              >
-                A senior QA engineer costs $120K/year.
-                <br />
-                FlowLens does the same job, every day.
-              </p>
-            </div>
+            Wake up to <em>clarity</em>
+          </h2>
+          <p
+            style={{
+              color: "var(--gray)",
+              fontSize: 14,
+              maxWidth: 520,
+              marginBottom: 48,
+              lineHeight: 1.7,
+            }}
+          >
+            Every morning, FlowLens sends you a briefing of what changed
+            overnight. New bugs, fixed bugs, performance shifts. Like a
+            standup report from a QA engineer who worked the night shift.
+          </p>
 
+          {/* Briefing mock — full width, looks like a real product UI */}
+          <div
+            style={{
+              background: "#1a1a1a",
+              borderRadius: 10,
+              overflow: "hidden",
+              boxShadow: "0 8px 40px rgba(0,0,0,0.15)",
+            }}
+          >
+            {/* Terminal-style header bar */}
             <div
               style={{
-                background: "var(--white)",
-                border: "1px solid var(--light)",
-                borderRadius: 8,
-                overflow: "hidden",
+                padding: "12px 20px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                borderBottom: "1px solid #333",
               }}
             >
+              <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#ff5f57" }} />
+              <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#febc2e" }} />
+              <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#28c840" }} />
+              <span style={{ fontSize: 12, color: "#666", marginLeft: 12, fontFamily: "'IBM Plex Mono', monospace" }}>
+                FlowLens Daily — myapp.com
+              </span>
+            </div>
+
+            {/* Briefing content */}
+            <div style={{ padding: "32px 32px 40px" }}>
+              {/* Health score — prominent */}
               <div
                 style={{
-                  padding: "12px 20px",
-                  borderBottom: "1px solid var(--light)",
-                  fontSize: 11,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "var(--gray)",
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 12,
+                  marginBottom: 32,
                 }}
               >
-                FlowLens Daily — myapp.com — Feb 21
+                <span
+                  className="serif"
+                  style={{ fontSize: 56, color: "#fff", letterSpacing: "-0.03em" }}
+                >
+                  78
+                </span>
+                <span style={{ fontSize: 18, color: "#666" }}>/100</span>
+                <span style={{ fontSize: 14, color: "#28c840", marginLeft: 8 }}>↑ 3</span>
+                <span style={{ fontSize: 12, color: "#666", marginLeft: "auto" }}>
+                  Feb 21, 2026 · 847 pages · 14 flows
+                </span>
               </div>
+
+              {/* Three columns: New / Fixed / Performance */}
               <div
+                className="briefing-grid"
                 style={{
-                  padding: 20,
-                  fontSize: 13,
-                  lineHeight: 1.7,
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr 1fr",
+                  gap: 1,
+                  background: "#333",
                 }}
               >
-                <p style={{ color: "var(--gray)", marginBottom: 16 }}>
-                  I tested 847 pages across 14 flows last night.
-                </p>
-                <p style={{ marginBottom: 4 }}>
-                  <strong>Health:</strong>{" "}
-                  <span style={{ color: "var(--green)" }}>78/100 ↑3</span>
-                </p>
-                <div style={{ marginTop: 16 }}>
-                  <p style={{ color: "var(--red)", fontWeight: 500, marginBottom: 4 }}>
-                    New (2):
-                  </p>
-                  <p style={{ color: "var(--gray)", paddingLeft: 12 }}>
-                    P1 — Checkout btn unresponsive on mobile
-                    <br />
-                    P2 — /pricing hero image 404
-                  </p>
+                {/* New bugs */}
+                <div style={{ background: "#1a1a1a", padding: "24px" }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.1em",
+                      color: "#ff5f57",
+                      marginBottom: 16,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#ff5f57", display: "inline-block" }} />
+                    New Bugs (2)
+                  </div>
+                  <div style={{ fontSize: 13, color: "#ccc", lineHeight: 2.0 }}>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <span style={{ color: "#ff5f57", fontWeight: 600, flexShrink: 0 }}>P1</span>
+                      <span>Checkout button unresponsive on mobile</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <span style={{ color: "#febc2e", fontWeight: 600, flexShrink: 0 }}>P2</span>
+                      <span>/pricing hero image returns 404</span>
+                    </div>
+                  </div>
                 </div>
-                <div style={{ marginTop: 12 }}>
-                  <p style={{ color: "var(--green)", fontWeight: 500, marginBottom: 4 }}>
-                    Fixed (3):
-                  </p>
-                  <p style={{ color: "var(--gray)", paddingLeft: 12 }}>
-                    ✓ Login redirect loop
-                    <br />
-                    ✓ Footer overlap on tablet
-                    <br />✓ Missing alt on /about
-                  </p>
+
+                {/* Fixed */}
+                <div style={{ background: "#1a1a1a", padding: "24px" }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.1em",
+                      color: "#28c840",
+                      marginBottom: 16,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#28c840", display: "inline-block" }} />
+                    Fixed (3)
+                  </div>
+                  <div style={{ fontSize: 13, color: "#888", lineHeight: 2.0 }}>
+                    <div>✓ Login redirect loop on Safari</div>
+                    <div>✓ Footer overlap on tablet</div>
+                    <div>✓ Missing alt text on /about</div>
+                  </div>
                 </div>
+
+                {/* Performance */}
+                <div style={{ background: "#1a1a1a", padding: "24px" }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.1em",
+                      color: "#888",
+                      marginBottom: 16,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#888", display: "inline-block" }} />
+                    Performance
+                  </div>
+                  <div style={{ fontSize: 13, color: "#ccc", lineHeight: 2.0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>/checkout</span>
+                      <span style={{ color: "#ff5f57" }}>2.8s ↑</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>/homepage</span>
+                      <span style={{ color: "#28c840" }}>1.9s ↓</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>/search</span>
+                      <span style={{ color: "#888" }}>0.8s —</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Persistent bugs warning */}
+              <div
+                style={{
+                  marginTop: 24,
+                  padding: "14px 20px",
+                  background: "rgba(254, 188, 46, 0.08)",
+                  border: "1px solid rgba(254, 188, 46, 0.2)",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "#febc2e",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
+                <span>⚠</span>
+                <span>
+                  <strong>Persistent:</strong> Signup form 500 error — open for 12 days
+                </span>
               </div>
             </div>
           </div>
+
+          <p
+            style={{
+              color: "var(--gray)",
+              fontSize: 12,
+              marginTop: 20,
+              textAlign: "center",
+            }}
+          >
+            Delivered to your inbox and Slack every morning. A senior QA engineer costs $120K/year — FlowLens does this daily.
+          </p>
         </div>
       </section>
 
