@@ -69,6 +69,32 @@ export default function Home() {
           color: var(--gray);
           cursor: not-allowed;
         }
+        .btn-cta {
+          background: #1a5c2e;
+        }
+        .btn-cta:hover:not(:disabled) {
+          background: #174f27;
+        }
+        .scan-card {
+          background: #f5f5f4;
+          border: 2px solid var(--light);
+          border-radius: 8px;
+          padding: 32px 28px;
+          transition: border-color 0.2s, box-shadow 0.2s;
+          box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+        }
+        .scan-card:focus-within {
+          border-color: var(--black);
+          box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        }
+        .step-card {
+          background: var(--white);
+          padding: 40px 32px;
+          transition: box-shadow 0.2s;
+        }
+        .step-card:hover {
+          box-shadow: 0 2px 16px rgba(0,0,0,0.05);
+        }
         .status-dot {
           width: 6px;
           height: 6px;
@@ -251,15 +277,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div>
-                  <div
-                    style={{
-                      background: "#f5f5f4",
-                      border: "2px solid var(--light)",
-                      borderRadius: 8,
-                      padding: "32px 28px",
-                      transition: "border-color 0.2s",
-                    }}
-                  >
+                  <div className="scan-card">
                     <p style={{ fontSize: 13, color: "var(--gray)", marginBottom: 16 }}>
                       Enter your website URL and we&apos;ll scan it for bugs, performance issues, and accessibility problems across desktop and mobile.
                     </p>
@@ -293,7 +311,7 @@ export default function Home() {
                   </div>
 
                   <button
-                    className="btn"
+                    className="btn btn-cta"
                     onClick={handleScan}
                     disabled={scanState === "loading" || !url.trim()}
                     style={{ width: "100%", marginTop: 12, padding: "16px 28px" }}
@@ -320,6 +338,45 @@ export default function Home() {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Stats — social proof */}
+      <section
+        style={{
+          padding: "32px 0",
+          borderBottom: "1px solid var(--black)",
+          background: "var(--white)",
+        }}
+      >
+        <div className="container">
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              gap: 64,
+              flexWrap: "wrap",
+            }}
+          >
+            {[
+              { value: "20+", label: "Bug types detected" },
+              { value: "4", label: "Detection categories" },
+              { value: "2", label: "Viewports per crawl" },
+              { value: "< 5 min", label: "Time to first report" },
+            ].map((stat) => (
+              <div key={stat.label} style={{ textAlign: "center" }}>
+                <p
+                  className="serif"
+                  style={{ fontSize: 28, letterSpacing: "-0.02em" }}
+                >
+                  {stat.value}
+                </p>
+                <p style={{ fontSize: 11, color: "var(--gray)", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 4 }}>
+                  {stat.label}
+                </p>
+              </div>
+            ))}
           </div>
         </div>
       </section>
@@ -366,10 +423,7 @@ export default function Home() {
             ].map((step) => (
               <div
                 key={step.num}
-                style={{
-                  background: "var(--white)",
-                  padding: "40px 32px",
-                }}
+                className="step-card"
               >
                 <p
                   style={{
@@ -686,8 +740,55 @@ export default function Home() {
         </div>
       </section>
 
+      {/* CTA — conversion block */}
+      <section
+        style={{
+          padding: "80px 0",
+          borderBottom: "1px solid var(--black)",
+          background: "var(--black)",
+          color: "var(--white)",
+        }}
+      >
+        <div className="container" style={{ textAlign: "center", maxWidth: 640 }}>
+          <h2
+            className="serif"
+            style={{
+              fontSize: "clamp(28px, 4vw, 42px)",
+              lineHeight: 1.1,
+              letterSpacing: "-0.02em",
+              marginBottom: 16,
+            }}
+          >
+            Stop shipping bugs to production
+          </h2>
+          <p
+            style={{
+              fontSize: 14,
+              color: "#a3a3a3",
+              marginBottom: 32,
+              lineHeight: 1.7,
+            }}
+          >
+            Paste your URL. Get your first scan in 5 minutes. Wake up to a
+            daily briefing tomorrow morning. No signup, no credit card.
+          </p>
+          <a
+            href="#scan"
+            onClick={(e) => { e.preventDefault(); document.getElementById("scan")?.scrollIntoView({ behavior: "smooth" }); }}
+            className="btn"
+            style={{
+              background: "#1a5c2e",
+              padding: "16px 40px",
+              fontSize: 13,
+            }}
+          >
+            Scan Your Site Free →
+          </a>
+        </div>
+      </section>
+
       {/* Contact */}
-      <section id="contact" style={{ padding: "100px 0" }}>
+      <section id="contact" style={{ padding: "80px 0" }}>
         <div className="container">
           <div
             className="briefing-grid"
