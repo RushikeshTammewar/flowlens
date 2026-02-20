@@ -123,6 +123,7 @@ async def get_scan(scan_id: str):
                 for m in result.metrics
             ],
             "pages_visited": result.pages_visited,
+            "site_graph": scan.get("site_graph", {}),
             "screenshots": {k: v for k, v in list(screenshots.items())[:20]},
             "errors": result.errors,
         }
@@ -157,6 +158,7 @@ async def run_scan(scan_id: str, url: str, max_pages: int, viewports: list[str])
         scans[scan_id]["status"] = "completed"
         scans[scan_id]["result"] = result
         scans[scan_id]["screenshots"] = scanner.get_screenshots()
+        scans[scan_id]["site_graph"] = scanner.get_site_graph()
     except Exception as e:
         scans[scan_id]["status"] = "failed"
         scans[scan_id]["error"] = str(e)[:500]

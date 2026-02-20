@@ -35,6 +35,24 @@ interface BugSummary {
   by_category: Record<string, number>;
 }
 
+interface GraphNode {
+  id: string;
+  label: string;
+  path: string;
+  bugs: number;
+  max_severity: string | null;
+}
+
+interface GraphEdge {
+  from: string;
+  to: string;
+}
+
+interface SiteGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 interface ScanResult {
   scan_id: string;
   status: string;
@@ -48,6 +66,7 @@ interface ScanResult {
   bug_summary?: BugSummary;
   metrics: Metric[];
   pages_visited: string[];
+  site_graph?: SiteGraph;
   screenshots?: Record<string, string>;
   errors: string[];
 }
@@ -63,7 +82,7 @@ export default function ScanResultPage() {
   const [data, setData] = useState<ScanResult | null>(null);
   const [polling, setPolling] = useState(true);
   const [expandedBug, setExpandedBug] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<"bugs" | "performance" | "pages">("bugs");
+  const [activeTab, setActiveTab] = useState<"bugs" | "flowmap" | "performance" | "pages">("bugs");
 
   useEffect(() => {
     if (!scanId) return;
@@ -144,14 +163,20 @@ export default function ScanResultPage() {
             </section>
 
             {/* Tab navigation */}
-            <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #2a2a2a" }}>
-              {(["bugs", "performance", "pages"] as const).map(tab => (
-                <button key={tab} onClick={() => setActiveTab(tab)} style={{
-                  padding: "14px 24px", background: "transparent", border: "none", color: activeTab === tab ? "#fff" : "#666",
+            <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #2a2a2a", overflowX: "auto" }}>
+              {([
+                { key: "bugs" as const, label: `Bugs (${data.bugs.length})` },
+                { key: "flowmap" as const, label: "Flow Map" },
+                { key: "performance" as const, label: "Performance" },
+                { key: "pages" as const, label: `Pages (${data.pages_tested})` },
+              ]).map(tab => (
+                <button key={tab.key} onClick={() => setActiveTab(tab.key)} style={{
+                  padding: "14px 24px", background: "transparent", border: "none", color: activeTab === tab.key ? "#fff" : "#666",
                   fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", cursor: "pointer",
-                  borderBottom: activeTab === tab ? "2px solid #fff" : "2px solid transparent", fontFamily: "inherit",
+                  borderBottom: activeTab === tab.key ? "2px solid #fff" : "2px solid transparent", fontFamily: "inherit",
+                  whiteSpace: "nowrap",
                 }}>
-                  {tab === "bugs" ? `Bugs (${data.bugs.length})` : tab === "performance" ? "Performance" : `Pages (${data.pages_tested})`}
+                  {tab.label}
                 </button>
               ))}
             </div>
@@ -245,6 +270,10 @@ export default function ScanResultPage() {
                     ))}
                   </div>
                 )
+              )}
+
+              {activeTab === "flowmap" && (
+                <FlowMapView graph={data.site_graph} bugs={data.bugs} />
               )}
 
               {activeTab === "performance" && (
@@ -350,6 +379,149 @@ function Spinner() {
       <div style={{ width: 40, height: 40, border: "2px solid #2a2a2a", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto" }} />
       <style jsx>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </>
+  );
+}
+
+function FlowMapView({ graph, bugs }: { graph?: SiteGraph; bugs: Bug[] }) {
+  if (!graph || !graph.nodes || graph.nodes.length === 0) {
+    return (
+      <div style={{ padding: "60px 0", textAlign: "center", color: "#555" }}>
+        <p>No flow map data available for this scan.</p>
+      </div>
+    );
+  }
+
+  const nodeColors = (node: GraphNode) => {
+    if (node.bugs === 0) return { bg: "#0d2818", border: "#1a5c2e", dot: "#28c840" };
+    if (node.max_severity === "P0" || node.max_severity === "P1") return { bg: "#2a1215", border: "#7f1d1d", dot: "#ff5f57" };
+    if (node.max_severity === "P2") return { bg: "#2a2010", border: "#78350f", dot: "#febc2e" };
+    return { bg: "#1a1a1a", border: "#333", dot: "#888" };
+  };
+
+  const rootNode = graph.nodes.find(n => n.path === "/" || n.path === "") || graph.nodes[0];
+  const childNodes = graph.nodes.filter(n => n.id !== rootNode?.id);
+
+  const shortPath = (path: string) => {
+    if (path === "/" || path === "") return "/";
+    const p = path.length > 30 ? path.slice(0, 27) + "..." : path;
+    return p;
+  };
+
+  return (
+    <div>
+      <p style={{ color: "#555", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 24 }}>
+        Site Structure · {graph.nodes.length} pages · {graph.edges.length} connections
+      </p>
+
+      {/* Root node */}
+      {rootNode && (
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{
+            display: "inline-block", padding: "16px 32px", borderRadius: 8,
+            background: nodeColors(rootNode).bg, border: `2px solid ${nodeColors(rootNode).border}`,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: nodeColors(rootNode).dot, display: "inline-block" }} />
+              <span style={{ color: "#fff", fontSize: 14, fontWeight: 500 }}>{rootNode.label || "/"}</span>
+            </div>
+            <p style={{ color: "#666", fontSize: 11, marginTop: 4 }}>{shortPath(rootNode.path)}</p>
+            {rootNode.bugs > 0 && (
+              <span style={{ display: "inline-block", marginTop: 6, padding: "2px 8px", fontSize: 10, background: SEV_BG[rootNode.max_severity || "P3"], color: SEV_COLORS[rootNode.max_severity || "P3"], borderRadius: 3 }}>
+                {rootNode.bugs} bug{rootNode.bugs !== 1 ? "s" : ""}
+              </span>
+            )}
+          </div>
+          {/* Connection line down */}
+          {childNodes.length > 0 && (
+            <div style={{ width: 1, height: 32, background: "#333", margin: "0 auto" }} />
+          )}
+        </div>
+      )}
+
+      {/* Child nodes in a grid */}
+      {childNodes.length > 0 && (
+        <>
+          {/* Horizontal connector bar */}
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 0 }}>
+            <div style={{
+              height: 1, background: "#333",
+              width: `min(${Math.min(childNodes.length, 4) * 25}%, 90%)`,
+            }} />
+          </div>
+
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${Math.min(childNodes.length, 4)}, 1fr)`,
+            gap: 12,
+            marginTop: 0,
+          }}>
+            {childNodes.map((node) => {
+              const colors = nodeColors(node);
+              const pageBugs = bugs.filter(b => b.page_url === node.id);
+              return (
+                <div key={node.id} style={{ textAlign: "center" }}>
+                  {/* Vertical connector */}
+                  <div style={{ width: 1, height: 24, background: "#333", margin: "0 auto" }} />
+
+                  <div style={{
+                    padding: "14px 16px", borderRadius: 8,
+                    background: colors.bg, border: `1px solid ${colors.border}`,
+                    transition: "border-color 0.2s",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center" }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: colors.dot, display: "inline-block", flexShrink: 0 }} />
+                      <span style={{ color: "#ddd", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {node.label || shortPath(node.path)}
+                      </span>
+                    </div>
+                    <p style={{ color: "#555", fontSize: 10, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {shortPath(node.path)}
+                    </p>
+
+                    {node.bugs > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <span style={{ padding: "2px 8px", fontSize: 9, background: SEV_BG[node.max_severity || "P3"], color: SEV_COLORS[node.max_severity || "P3"], borderRadius: 3, textTransform: "uppercase" }}>
+                          {node.bugs} bug{node.bugs !== 1 ? "s" : ""} · {node.max_severity}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Mini bug list for this page */}
+                    {pageBugs.length > 0 && (
+                      <div style={{ marginTop: 8, textAlign: "left" }}>
+                        {pageBugs.slice(0, 3).map((b, bi) => (
+                          <div key={bi} style={{ fontSize: 10, color: "#666", padding: "2px 0", borderTop: "1px solid #1f1f1f" }}>
+                            <span style={{ color: SEV_COLORS[b.severity], marginRight: 4 }}>{b.severity}</span>
+                            {b.title.length > 35 ? b.title.slice(0, 32) + "..." : b.title}
+                          </div>
+                        ))}
+                        {pageBugs.length > 3 && (
+                          <p style={{ fontSize: 9, color: "#444", marginTop: 2 }}>+{pageBugs.length - 3} more</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Legend */}
+      <div style={{ display: "flex", gap: 24, marginTop: 32, justifyContent: "center" }}>
+        {[
+          { color: "#28c840", label: "Healthy" },
+          { color: "#febc2e", label: "Warnings" },
+          { color: "#ff5f57", label: "Bugs found" },
+        ].map(item => (
+          <div key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#666" }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: item.color, display: "inline-block" }} />
+            {item.label}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

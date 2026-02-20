@@ -40,6 +40,7 @@ class FlowLensScanner:
         self.viewports = viewports or ["desktop", "mobile"]
         self.result = CrawlResult(url=url)
         self.screenshots: dict[str, str] = {}
+        self._site_data: dict = {}
 
     async def scan(self) -> CrawlResult:
         self.result.started_at = datetime.now()
@@ -55,6 +56,7 @@ class FlowLensScanner:
             discovery_page = await discovery_ctx.new_page()
             crawler = SiteCrawler(self.url, max_pages=self.max_pages)
             site_data = await crawler.discover(discovery_page)
+            self._site_data = site_data
             await discovery_ctx.close()
 
             pages_to_test = site_data["pages"]
@@ -136,6 +138,36 @@ class FlowLensScanner:
 
     def get_screenshots(self) -> dict[str, str]:
         return self.screenshots
+
+    def get_site_graph(self) -> dict:
+        """Return the discovered site graph for visualization."""
+        graph = self._site_data.get("graph", {})
+        titles = self._site_data.get("titles", {})
+        bug_pages = {}
+        for bug in self.result.bugs:
+            url = bug.page_url
+            if url not in bug_pages:
+                bug_pages[url] = {"count": 0, "max_severity": "P4"}
+            bug_pages[url]["count"] += 1
+            sev_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
+            if sev_order.get(bug.severity.value, 4) < sev_order.get(bug_pages[url]["max_severity"], 4):
+                bug_pages[url]["max_severity"] = bug.severity.value
+
+        nodes = []
+        edges = []
+        for page_url in self._site_data.get("pages", []):
+            nodes.append({
+                "id": page_url,
+                "label": titles.get(page_url, page_url.split("/")[-1] or "/"),
+                "path": "/" + "/".join(page_url.replace("https://", "").replace("http://", "").split("/")[1:]),
+                "bugs": bug_pages.get(page_url, {}).get("count", 0),
+                "max_severity": bug_pages.get(page_url, {}).get("max_severity"),
+            })
+            for linked_url in graph.get(page_url, []):
+                if linked_url in self._site_data.get("pages", []):
+                    edges.append({"from": page_url, "to": linked_url})
+
+        return {"nodes": nodes, "edges": edges}
 
 
 async def _interact_with_page(page: Page):
