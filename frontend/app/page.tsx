@@ -1,14 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function Home() {
   const [url, setUrl] = useState("");
   const [scanState, setScanState] = useState<"idle" | "loading" | "done">(
     "idle"
   );
+  const [scanError, setScanError] = useState("");
+  const router = useRouter();
 
-  const handleScan = () => {
+  const handleScan = async () => {
     if (!url.trim()) return;
     let v = url.trim();
     if (!v.startsWith("http")) {
@@ -16,7 +21,24 @@ export default function Home() {
       setUrl(v);
     }
     setScanState("loading");
-    setTimeout(() => setScanState("done"), 2200);
+    setScanError("");
+
+    try {
+      const res = await fetch(`${API_URL}/api/v1/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: v, max_pages: 10 }),
+      });
+      const data = await res.json();
+      if (data.scan_id) {
+        router.push(`/scan/${data.scan_id}`);
+      } else {
+        throw new Error("No scan ID returned");
+      }
+    } catch {
+      setScanState("done");
+      setScanError("Could not reach the scan server. We'll email your report instead.");
+    }
   };
 
   return (
@@ -248,31 +270,28 @@ export default function Home() {
                 Scan your website
               </p>
 
-              {scanState === "done" ? (
+              {scanState === "done" && scanError ? (
                 <div
                   style={{
                     background: "#f5f5f4",
-                    border: `2px solid var(--green)`,
+                    border: `2px solid var(--amber)`,
                     borderRadius: 8,
                     padding: "40px 32px",
                     textAlign: "center",
                   }}
                 >
                   <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>
-                    ✓ Scan requested
+                    Scan requested for {url}
                   </p>
-                  <p style={{ fontSize: 13, color: "var(--gray)", marginBottom: 4 }}>
-                    {url}
-                  </p>
-                  <p style={{ fontSize: 12, color: "var(--gray)", marginBottom: 24 }}>
-                    We&apos;ll email your health report to contact@flowlens.in within 24 hours.
+                  <p style={{ fontSize: 13, color: "var(--gray)", marginBottom: 24 }}>
+                    {scanError}
                   </p>
                   <button
                     className="btn"
-                    onClick={() => { setUrl(""); setScanState("idle"); }}
+                    onClick={() => { setUrl(""); setScanState("idle"); setScanError(""); }}
                     style={{ width: "auto" }}
                   >
-                    Scan Another Site
+                    Try Again
                   </button>
                 </div>
               ) : (
