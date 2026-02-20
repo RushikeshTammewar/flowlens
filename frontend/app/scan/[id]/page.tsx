@@ -13,14 +13,26 @@ interface Bug {
   page_url: string;
   viewport: string;
   description: string;
+  screenshot_b64?: string;
+  repro_steps?: string[];
+  evidence: Record<string, unknown>;
 }
 
 interface Metric {
   url: string;
   viewport: string;
   load_time_ms: number;
+  ttfb_ms: number;
   fcp_ms: number | null;
   dom_node_count: number;
+  request_count: number;
+  transfer_bytes: number;
+}
+
+interface BugSummary {
+  total: number;
+  by_severity: Record<string, number>;
+  by_category: Record<string, number>;
 }
 
 interface ScanResult {
@@ -28,36 +40,41 @@ interface ScanResult {
   status: string;
   url: string;
   started_at: string;
+  completed_at?: string;
+  duration_seconds?: number;
   health_score: number | null;
   pages_tested: number;
   bugs: Bug[];
+  bug_summary?: BugSummary;
   metrics: Metric[];
   pages_visited: string[];
+  screenshots?: Record<string, string>;
   errors: string[];
 }
+
+const SEV_COLORS: Record<string, string> = { P0: "#ff5f57", P1: "#ff5f57", P2: "#febc2e", P3: "#888", P4: "#555" };
+const SEV_BG: Record<string, string> = { P0: "rgba(255,95,87,0.1)", P1: "rgba(255,95,87,0.08)", P2: "rgba(254,188,46,0.08)", P3: "rgba(136,136,136,0.08)", P4: "rgba(85,85,85,0.05)" };
+const CAT_LABELS: Record<string, string> = { functional: "Functional", performance: "Performance", responsive: "Responsive", accessibility: "Accessibility", security: "Security", visual: "Visual" };
+const CONF_DOTS: Record<string, string> = { HIGH: "●", MEDIUM: "◐", LOW: "○" };
 
 export default function ScanResultPage() {
   const params = useParams();
   const scanId = params.id as string;
   const [data, setData] = useState<ScanResult | null>(null);
   const [polling, setPolling] = useState(true);
+  const [expandedBug, setExpandedBug] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<"bugs" | "performance" | "pages">("bugs");
 
   useEffect(() => {
     if (!scanId) return;
-
     const poll = async () => {
       try {
         const res = await fetch(`${API_URL}/api/v1/scan/${scanId}`);
         const json = await res.json();
         setData(json);
-        if (json.status === "completed" || json.status === "failed") {
-          setPolling(false);
-        }
-      } catch {
-        /* retry */
-      }
+        if (json.status === "completed" || json.status === "failed") setPolling(false);
+      } catch { /* retry */ }
     };
-
     poll();
     if (polling) {
       const interval = setInterval(poll, 3000);
@@ -65,238 +82,285 @@ export default function ScanResultPage() {
     }
   }, [scanId, polling]);
 
-  return (
-    <>
-      <style jsx global>{`
-        .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
-        .serif { font-family: "Instrument Serif", serif; font-weight: 400; }
-        .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: #737373; }
-        @media (max-width: 768px) {
-          .metrics-grid { grid-template-columns: 1fr !important; }
-          .bug-row { flex-direction: column !important; gap: 4px !important; }
-        }
-      `}</style>
-
-      <header style={{ padding: "20px 0", borderBottom: "1px solid #0f0f0f", background: "#fafaf9" }}>
-        <div className="container" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <a href="/" className="serif" style={{ fontSize: 28, letterSpacing: "-0.02em", textDecoration: "none", color: "#0f0f0f" }}>
-            FlowLens
-          </a>
-          <a href="/" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em", textDecoration: "none", color: "#0f0f0f" }}>
-            ← New Scan
-          </a>
-        </div>
-      </header>
-
-      <main style={{ padding: "60px 0 100px" }}>
-        <div className="container">
-          {!data ? (
-            <LoadingState />
-          ) : data.status === "running" ? (
-            <RunningState url={data.url} />
-          ) : data.status === "failed" ? (
-            <FailedState url={data.url} error={data.errors?.[0]} />
-          ) : (
-            <CompletedState data={data} />
-          )}
-        </div>
-      </main>
-
-      <footer style={{ padding: "24px 0", borderTop: "1px solid #0f0f0f" }}>
-        <div className="container" style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#737373" }}>
-          <span>© 2026 FlowLens</span>
-          <a href="mailto:contact@flowlens.in" style={{ color: "#737373", textDecoration: "none" }}>contact@flowlens.in</a>
-        </div>
-      </footer>
-    </>
-  );
-}
-
-function LoadingState() {
-  return (
-    <div style={{ textAlign: "center", padding: "80px 0" }}>
-      <div style={{ width: 40, height: 40, border: "3px solid #e7e5e4", borderTopColor: "#0f0f0f", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 24px" }} />
-      <p style={{ color: "#737373" }}>Loading scan...</p>
-      <style jsx>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
-}
-
-function RunningState({ url }: { url: string }) {
-  return (
-    <div style={{ textAlign: "center", padding: "80px 0" }}>
-      <div style={{ width: 48, height: 48, border: "3px solid #e7e5e4", borderTopColor: "#0f0f0f", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 24px" }} />
-      <h2 className="serif" style={{ fontSize: 28, marginBottom: 8 }}>Scanning {url}</h2>
-      <p style={{ color: "#737373", fontSize: 14 }}>Crawling pages, testing viewports, detecting bugs...</p>
-      <p style={{ color: "#737373", fontSize: 12, marginTop: 8 }}>This usually takes 15–60 seconds.</p>
-      <style jsx>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
-}
-
-function FailedState({ url, error }: { url: string; error?: string }) {
-  return (
-    <div style={{ textAlign: "center", padding: "80px 0" }}>
-      <p style={{ fontSize: 32, marginBottom: 16 }}>⚠</p>
-      <h2 className="serif" style={{ fontSize: 28, marginBottom: 8 }}>Scan failed</h2>
-      <p style={{ color: "#737373", fontSize: 14, marginBottom: 8 }}>{url}</p>
-      {error && <p style={{ color: "#dc2626", fontSize: 13, maxWidth: 400, margin: "0 auto" }}>{error}</p>}
-      <a href="/" style={{ display: "inline-block", marginTop: 24, padding: "14px 28px", background: "#0f0f0f", color: "#fafaf9", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", textDecoration: "none" }}>
-        Try Again
-      </a>
-    </div>
-  );
-}
-
-function CompletedState({ data }: { data: ScanResult }) {
-  const sevColors: Record<string, string> = { P0: "#dc2626", P1: "#dc2626", P2: "#b45309", P3: "#737373", P4: "#a3a3a3" };
-  const confLabels: Record<string, string> = { HIGH: "●", MEDIUM: "◐", LOW: "○" };
-
   const shortUrl = (u: string) => {
     const s = u.replace("https://", "").replace("http://", "");
-    return s.length > 45 ? s.slice(0, 42) + "..." : s;
+    return s.length > 50 ? s.slice(0, 47) + "..." : s;
   };
 
   return (
-    <>
+    <div style={{ minHeight: "100vh", background: "#0f0f0f", color: "#e5e5e5", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13 }}>
       {/* Header */}
-      <p className="label" style={{ marginBottom: 8 }}>Scan Report</p>
-      <h1 className="serif" style={{ fontSize: 36, marginBottom: 4, letterSpacing: "-0.02em" }}>
-        {shortUrl(data.url)}
-      </h1>
-      <p style={{ fontSize: 13, color: "#737373", marginBottom: 48 }}>
-        {data.pages_tested} pages tested · {data.bugs.length} bugs found · {new Date(data.started_at).toLocaleString()}
-      </p>
-
-      {/* Health Score */}
-      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 48, borderBottom: "1px solid #0f0f0f", paddingBottom: 48 }}>
-        <span className="serif" style={{ fontSize: 72, letterSpacing: "-0.03em" }}>
-          {data.health_score}
-        </span>
-        <span style={{ fontSize: 24, color: "#737373" }}>/100</span>
-        <span style={{ fontSize: 13, color: "#737373", marginLeft: 16 }}>Health Score</span>
-        <span style={{
-          marginLeft: "auto",
-          padding: "6px 16px",
-          fontSize: 12,
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
-          background: (data.health_score ?? 0) >= 80 ? "#f0fdf4" : (data.health_score ?? 0) >= 60 ? "#fffbeb" : "#fef2f2",
-          color: (data.health_score ?? 0) >= 80 ? "#16a34a" : (data.health_score ?? 0) >= 60 ? "#b45309" : "#dc2626",
-        }}>
-          {(data.health_score ?? 0) >= 80 ? "Healthy" : (data.health_score ?? 0) >= 60 ? "Needs Attention" : "Critical"}
-        </span>
-      </div>
-
-      {/* Bugs */}
-      <p className="label" style={{ marginBottom: 20 }}>
-        Bugs ({data.bugs.length})
-      </p>
-
-      {data.bugs.length === 0 ? (
-        <div style={{ padding: "40px 0", borderBottom: "1px solid #e7e5e4", marginBottom: 48, color: "#16a34a", fontSize: 14 }}>
-          ✓ No bugs found. Your site is looking healthy.
+      <header style={{ padding: "16px 0", borderBottom: "1px solid #2a2a2a" }}>
+        <div style={{ maxWidth: 1200, margin: "0 auto", padding: "0 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <a href="/" style={{ fontFamily: "'Instrument Serif', serif", fontSize: 24, color: "#fff", textDecoration: "none" }}>FlowLens</a>
+          <a href="/" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: "#888", textDecoration: "none" }}>← New Scan</a>
         </div>
-      ) : (
-        <div style={{ marginBottom: 48 }}>
-          {data.bugs.map((bug, i) => (
-            <div
-              key={i}
-              className="bug-row"
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                gap: 16,
-                padding: "14px 0",
-                borderBottom: "1px solid #e7e5e4",
-                fontSize: 13,
-              }}
-            >
-              <span style={{ color: sevColors[bug.severity] || "#737373", fontWeight: 600, flexShrink: 0, width: 28 }}>
-                {bug.severity}
-              </span>
-              <span style={{ flexShrink: 0, width: 14, color: "#737373" }} title={bug.confidence}>
-                {confLabels[bug.confidence] || "?"}
-              </span>
-              <span style={{ flex: 1 }}>{bug.title}</span>
-              <span style={{ color: "#737373", flexShrink: 0, fontSize: 12 }}>
-                {shortUrl(bug.page_url)}
-              </span>
-              <span style={{ color: "#a3a3a3", flexShrink: 0, fontSize: 11, textTransform: "uppercase", width: 60, textAlign: "right" }}>
-                {bug.viewport}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      </header>
 
-      {/* Performance */}
-      {data.metrics.length > 0 && (
-        <>
-          <p className="label" style={{ marginBottom: 20 }}>
-            Performance
-          </p>
-          <div
-            className="metrics-grid"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 1,
-              background: "#0f0f0f",
-              marginBottom: 48,
-            }}
-          >
-            {data.metrics.map((m, i) => {
-              const loadColor = m.load_time_ms < 3000 ? "#16a34a" : m.load_time_ms < 5000 ? "#b45309" : "#dc2626";
-              return (
-                <div key={i} style={{ background: "#fafaf9", padding: "24px" }}>
-                  <p style={{ fontSize: 12, color: "#737373", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    {shortUrl(m.url)} · {m.viewport}
+      <main style={{ maxWidth: 1200, margin: "0 auto", padding: "0 24px" }}>
+        {!data ? <ScanLoading /> :
+         data.status === "running" ? <ScanRunning url={data.url} /> :
+         data.status === "failed" ? <ScanFailed url={data.url} error={data.errors?.[0]} /> : (
+          <>
+            {/* Hero section: URL + Health Score */}
+            <section style={{ padding: "48px 0 40px", borderBottom: "1px solid #2a2a2a" }}>
+              <p style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: "#666", marginBottom: 12 }}>Scan Report</p>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 24 }}>
+                <div>
+                  <h1 style={{ fontFamily: "'Instrument Serif', serif", fontSize: 32, color: "#fff", marginBottom: 8, fontWeight: 400 }}>{shortUrl(data.url)}</h1>
+                  <p style={{ color: "#666", fontSize: 12 }}>
+                    {data.pages_tested} pages · {data.bugs.length} bugs · {data.duration_seconds ? `${Math.round(data.duration_seconds)}s` : ""} · {new Date(data.started_at).toLocaleString()}
                   </p>
-                  <div style={{ display: "flex", gap: 32 }}>
-                    <div>
-                      <p className="serif" style={{ fontSize: 28, color: loadColor }}>{m.load_time_ms}ms</p>
-                      <p style={{ fontSize: 11, color: "#737373" }}>Load time</p>
-                    </div>
-                    {m.fcp_ms && (
-                      <div>
-                        <p className="serif" style={{ fontSize: 28 }}>{m.fcp_ms}ms</p>
-                        <p style={{ fontSize: 11, color: "#737373" }}>FCP</p>
-                      </div>
-                    )}
-                    <div>
-                      <p className="serif" style={{ fontSize: 28 }}>{m.dom_node_count}</p>
-                      <p style={{ fontSize: 11, color: "#737373" }}>DOM nodes</p>
-                    </div>
-                  </div>
                 </div>
-              );
-            })}
-          </div>
-        </>
-      )}
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                    <span style={{ fontFamily: "'Instrument Serif', serif", fontSize: 64, color: _scoreColor(data.health_score ?? 0), lineHeight: 1 }}>{data.health_score}</span>
+                    <span style={{ fontSize: 18, color: "#555" }}>/100</span>
+                  </div>
+                  <span style={{
+                    display: "inline-block", marginTop: 4, padding: "4px 12px", fontSize: 10,
+                    textTransform: "uppercase", letterSpacing: "0.1em",
+                    background: _scoreBg(data.health_score ?? 0), color: _scoreColor(data.health_score ?? 0),
+                    borderRadius: 3,
+                  }}>
+                    {(data.health_score ?? 0) >= 80 ? "Healthy" : (data.health_score ?? 0) >= 60 ? "Needs Attention" : "Critical"}
+                  </span>
+                </div>
+              </div>
 
-      {/* Pages Visited */}
-      <p className="label" style={{ marginBottom: 12 }}>
-        Pages crawled ({data.pages_visited.length})
-      </p>
-      <div style={{ marginBottom: 48 }}>
-        {data.pages_visited.map((page, i) => (
-          <div key={i} style={{ padding: "8px 0", borderBottom: "1px solid #e7e5e4", fontSize: 13, color: "#737373" }}>
-            {page}
-          </div>
-        ))}
-      </div>
+              {/* Bug summary chips */}
+              {data.bug_summary && data.bug_summary.total > 0 && (
+                <div style={{ display: "flex", gap: 8, marginTop: 24, flexWrap: "wrap" }}>
+                  {Object.entries(data.bug_summary.by_severity || {}).sort().map(([sev, count]) => (
+                    <span key={sev} style={{ padding: "4px 12px", background: SEV_BG[sev] || "rgba(255,255,255,0.05)", color: SEV_COLORS[sev] || "#888", fontSize: 11, borderRadius: 3 }}>
+                      {count} {sev}
+                    </span>
+                  ))}
+                  <span style={{ padding: "4px 12px", background: "rgba(255,255,255,0.03)", color: "#666", fontSize: 11, borderRadius: 3, marginLeft: 8 }}>
+                    {Object.entries(data.bug_summary.by_category || {}).map(([cat, count]) => `${count} ${cat}`).join(" · ")}
+                  </span>
+                </div>
+              )}
+            </section>
 
-      {/* CTA */}
-      <div style={{ textAlign: "center", padding: "40px 0" }}>
-        <p style={{ fontSize: 14, color: "#737373", marginBottom: 16 }}>
-          Want this report every morning? FlowLens monitors your site daily.
-        </p>
-        <a href="mailto:contact@flowlens.in?subject=FlowLens Beta Access" style={{ display: "inline-block", padding: "14px 32px", background: "#1a5c2e", color: "#fafaf9", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", textDecoration: "none" }}>
-          Get Daily Monitoring →
-        </a>
-      </div>
+            {/* Tab navigation */}
+            <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #2a2a2a" }}>
+              {(["bugs", "performance", "pages"] as const).map(tab => (
+                <button key={tab} onClick={() => setActiveTab(tab)} style={{
+                  padding: "14px 24px", background: "transparent", border: "none", color: activeTab === tab ? "#fff" : "#666",
+                  fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", cursor: "pointer",
+                  borderBottom: activeTab === tab ? "2px solid #fff" : "2px solid transparent", fontFamily: "inherit",
+                }}>
+                  {tab === "bugs" ? `Bugs (${data.bugs.length})` : tab === "performance" ? "Performance" : `Pages (${data.pages_tested})`}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab content */}
+            <section style={{ padding: "32px 0 80px" }}>
+              {activeTab === "bugs" && (
+                data.bugs.length === 0 ? (
+                  <div style={{ padding: "60px 0", textAlign: "center" }}>
+                    <p style={{ fontSize: 24, marginBottom: 8 }}>✓</p>
+                    <p style={{ color: "#28c840", fontSize: 15 }}>No bugs found. Your site is looking healthy.</p>
+                  </div>
+                ) : (
+                  <div>
+                    {data.bugs.map((bug, i) => (
+                      <div key={i} style={{ borderBottom: "1px solid #1f1f1f" }}>
+                        {/* Bug header row */}
+                        <div
+                          onClick={() => setExpandedBug(expandedBug === i ? null : i)}
+                          style={{
+                            padding: "16px 0", cursor: "pointer", display: "flex", alignItems: "center", gap: 16,
+                            transition: "background 0.1s",
+                          }}
+                        >
+                          <span style={{ color: SEV_COLORS[bug.severity] || "#888", fontWeight: 700, width: 32, flexShrink: 0 }}>{bug.severity}</span>
+                          <span style={{ color: "#555", width: 16, flexShrink: 0 }} title={`${bug.confidence} confidence`}>{CONF_DOTS[bug.confidence] || "?"}</span>
+                          <span style={{ flex: 1, color: "#ddd" }}>{bug.title}</span>
+                          <span style={{ color: "#555", fontSize: 11, flexShrink: 0 }}>{CAT_LABELS[bug.category] || bug.category}</span>
+                          <span style={{ color: "#444", fontSize: 11, width: 60, textAlign: "right", textTransform: "uppercase", flexShrink: 0 }}>{bug.viewport}</span>
+                          <span style={{ color: "#444", fontSize: 14, flexShrink: 0 }}>{expandedBug === i ? "−" : "+"}</span>
+                        </div>
+
+                        {/* Expanded bug detail */}
+                        {expandedBug === i && (
+                          <div style={{ padding: "0 0 24px 48px" }}>
+                            {/* Description */}
+                            <p style={{ color: "#999", lineHeight: 1.7, marginBottom: 20, maxWidth: 700 }}>{bug.description}</p>
+
+                            {/* Page URL */}
+                            <div style={{ marginBottom: 16 }}>
+                              <span style={{ color: "#555", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em" }}>Page: </span>
+                              <span style={{ color: "#888" }}>{bug.page_url}</span>
+                            </div>
+
+                            {/* Reproduction steps */}
+                            {bug.repro_steps && bug.repro_steps.length > 0 && (
+                              <div style={{ marginBottom: 20 }}>
+                                <p style={{ color: "#555", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Reproduction Steps</p>
+                                <div style={{ background: "#1a1a1a", borderRadius: 6, padding: "16px 20px" }}>
+                                  {bug.repro_steps.map((step, si) => (
+                                    <div key={si} style={{ display: "flex", gap: 12, padding: "4px 0", color: "#aaa", fontSize: 12 }}>
+                                      <span style={{ color: "#555", flexShrink: 0 }}>{si + 1}.</span>
+                                      <span>{step}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Screenshot */}
+                            {bug.screenshot_b64 && (
+                              <div style={{ marginBottom: 16 }}>
+                                <p style={{ color: "#555", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Screenshot</p>
+                                <img
+                                  src={`data:image/jpeg;base64,${bug.screenshot_b64}`}
+                                  alt={`Screenshot of ${bug.title}`}
+                                  style={{ maxWidth: "100%", borderRadius: 6, border: "1px solid #2a2a2a" }}
+                                />
+                              </div>
+                            )}
+
+                            {/* Evidence details */}
+                            {Object.keys(bug.evidence).filter(k => !["repro_steps", "screenshot_key", "page_title"].includes(k)).length > 0 && (
+                              <div>
+                                <p style={{ color: "#555", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Evidence</p>
+                                <div style={{ background: "#1a1a1a", borderRadius: 6, padding: "12px 16px", fontSize: 12 }}>
+                                  {Object.entries(bug.evidence)
+                                    .filter(([k]) => !["repro_steps", "screenshot_key", "page_title"].includes(k))
+                                    .map(([key, val]) => (
+                                      <div key={key} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #222" }}>
+                                        <span style={{ color: "#666" }}>{key}</span>
+                                        <span style={{ color: "#aaa", maxWidth: "60%", textAlign: "right", wordBreak: "break-all" }}>{String(val).substring(0, 200)}</span>
+                                      </div>
+                                    ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )
+              )}
+
+              {activeTab === "performance" && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 1, background: "#2a2a2a" }}>
+                  {data.metrics.map((m, i) => {
+                    const loadColor = m.load_time_ms < 2000 ? "#28c840" : m.load_time_ms < 3000 ? "#febc2e" : "#ff5f57";
+                    return (
+                      <div key={i} style={{ background: "#141414", padding: 24 }}>
+                        <p style={{ color: "#555", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 16 }}>
+                          {shortUrl(m.url)} · {m.viewport}
+                        </p>
+                        <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
+                          <div>
+                            <p style={{ fontFamily: "'Instrument Serif', serif", fontSize: 32, color: loadColor }}>{m.load_time_ms}<span style={{ fontSize: 14, color: "#555" }}>ms</span></p>
+                            <p style={{ fontSize: 10, color: "#555", textTransform: "uppercase" }}>Load time</p>
+                          </div>
+                          {m.fcp_ms != null && (
+                            <div>
+                              <p style={{ fontFamily: "'Instrument Serif', serif", fontSize: 32, color: "#ddd" }}>{m.fcp_ms}<span style={{ fontSize: 14, color: "#555" }}>ms</span></p>
+                              <p style={{ fontSize: 10, color: "#555", textTransform: "uppercase" }}>FCP</p>
+                            </div>
+                          )}
+                          <div>
+                            <p style={{ fontFamily: "'Instrument Serif', serif", fontSize: 32, color: "#ddd" }}>{m.dom_node_count}</p>
+                            <p style={{ fontSize: 10, color: "#555", textTransform: "uppercase" }}>DOM nodes</p>
+                          </div>
+                          {m.request_count > 0 && (
+                            <div>
+                              <p style={{ fontFamily: "'Instrument Serif', serif", fontSize: 32, color: "#ddd" }}>{m.request_count}</p>
+                              <p style={{ fontSize: 10, color: "#555", textTransform: "uppercase" }}>Requests</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {activeTab === "pages" && (
+                <div>
+                  {data.pages_visited.map((page, i) => (
+                    <div key={i} style={{ padding: "12px 0", borderBottom: "1px solid #1f1f1f", display: "flex", alignItems: "center", gap: 12 }}>
+                      <span style={{ color: "#28c840", flexShrink: 0 }}>✓</span>
+                      <span style={{ color: "#aaa" }}>{page}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Bottom CTA */}
+            <section style={{ padding: "48px 0", borderTop: "1px solid #2a2a2a", textAlign: "center" }}>
+              <p style={{ color: "#666", fontSize: 13, marginBottom: 16 }}>Want this report every morning? FlowLens monitors your site daily.</p>
+              <a href="mailto:contact@flowlens.in?subject=FlowLens Beta Access" style={{
+                display: "inline-block", padding: "14px 32px", background: "#1a5c2e", color: "#fff",
+                fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", textDecoration: "none",
+              }}>Get Daily Monitoring →</a>
+            </section>
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function ScanLoading() {
+  return (
+    <div style={{ textAlign: "center", padding: "120px 0" }}>
+      <Spinner />
+      <p style={{ color: "#666", marginTop: 20 }}>Loading scan...</p>
+    </div>
+  );
+}
+
+function ScanRunning({ url }: { url: string }) {
+  return (
+    <div style={{ textAlign: "center", padding: "120px 0" }}>
+      <Spinner />
+      <h2 style={{ fontFamily: "'Instrument Serif', serif", fontSize: 28, color: "#fff", marginTop: 24, fontWeight: 400 }}>Scanning...</h2>
+      <p style={{ color: "#888", marginTop: 8 }}>{url}</p>
+      <p style={{ color: "#555", fontSize: 12, marginTop: 8 }}>Crawling pages · Testing viewports · Detecting bugs</p>
+      <p style={{ color: "#444", fontSize: 11, marginTop: 24 }}>This usually takes 15–60 seconds</p>
+    </div>
+  );
+}
+
+function ScanFailed({ url, error }: { url: string; error?: string }) {
+  return (
+    <div style={{ textAlign: "center", padding: "120px 0" }}>
+      <p style={{ fontSize: 36, marginBottom: 16, color: "#ff5f57" }}>✕</p>
+      <h2 style={{ fontFamily: "'Instrument Serif', serif", fontSize: 28, color: "#fff", fontWeight: 400 }}>Scan failed</h2>
+      <p style={{ color: "#666", marginTop: 8 }}>{url}</p>
+      {error && <p style={{ color: "#ff5f57", fontSize: 12, marginTop: 12, maxWidth: 400, margin: "12px auto 0" }}>{error}</p>}
+      <a href="/" style={{ display: "inline-block", marginTop: 32, padding: "14px 28px", background: "#fff", color: "#0f0f0f", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", textDecoration: "none" }}>Try Again</a>
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <>
+      <div style={{ width: 40, height: 40, border: "2px solid #2a2a2a", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto" }} />
+      <style jsx>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </>
   );
+}
+
+function _scoreColor(score: number): string {
+  if (score >= 80) return "#28c840";
+  if (score >= 60) return "#febc2e";
+  return "#ff5f57";
+}
+
+function _scoreBg(score: number): string {
+  if (score >= 80) return "rgba(40,200,64,0.1)";
+  if (score >= 60) return "rgba(254,188,46,0.1)";
+  return "rgba(255,95,87,0.1)";
 }
