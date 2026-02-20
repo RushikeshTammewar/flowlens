@@ -159,8 +159,9 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Hero */}
+      {/* Hero + Scan — unified hero with scan as the centerpiece */}
       <section
+        id="scan"
         style={{ padding: "80px 0 60px", borderBottom: "1px solid var(--black)" }}
       >
         <div className="container">
@@ -170,7 +171,7 @@ export default function Home() {
               display: "grid",
               gridTemplateColumns: "1fr 1fr",
               gap: 80,
-              alignItems: "end",
+              alignItems: "start",
             }}
           >
             <div>
@@ -180,25 +181,25 @@ export default function Home() {
                   fontSize: "clamp(42px, 7vw, 72px)",
                   lineHeight: 0.95,
                   letterSpacing: "-0.03em",
+                  marginBottom: 24,
                 }}
               >
                 Your AI
                 <br />
                 <em>QA Engineer</em>
               </h1>
-            </div>
-            <div style={{ paddingBottom: 8 }}>
               <p
                 style={{
                   fontSize: 15,
                   color: "var(--gray)",
-                  maxWidth: 380,
+                  maxWidth: 400,
                   marginBottom: 24,
+                  lineHeight: 1.7,
                 }}
               >
-                Continuous website quality monitoring. We test every flow on
-                your site daily and tell you what changed — like a dedicated QA
-                engineer who never sleeps.
+                Paste your URL. We crawl every page like a human — on desktop
+                and mobile. Every day. We find the bugs, track performance, and
+                send you a morning briefing of what changed.
               </p>
               <div
                 style={{
@@ -214,121 +215,112 @@ export default function Home() {
                 <span>Beta — Try it now</span>
               </div>
             </div>
-          </div>
-        </div>
-      </section>
 
-      {/* Scan Section */}
-      <section
-        id="scan"
-        style={{
-          padding: "60px 0",
-          borderBottom: "1px solid var(--black)",
-          background: "#f5f5f4",
-        }}
-      >
-        <div className="container">
-          <p className="label" style={{ marginBottom: 32 }}>
-            Scan your website
-          </p>
+            {/* Scan input — right side, prominent */}
+            <div style={{ paddingTop: 16 }}>
+              <p className="label" style={{ marginBottom: 20 }}>
+                Scan your website
+              </p>
 
-          {scanState === "done" ? (
-            <div
-              style={{
-                maxWidth: 560,
-                background: "var(--white)",
-                border: `2px solid var(--green)`,
-                borderRadius: 8,
-                padding: "48px 40px",
-                textAlign: "center",
-              }}
-            >
-              <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>
-                Scan requested for {url}
-              </p>
-              <p style={{ fontSize: 13, color: "var(--gray)", marginBottom: 24 }}>
-                We&apos;ll email your full health report to contact@flowlens.in
-                within 24 hours.
-              </p>
-              <button
-                className="btn"
-                onClick={() => {
-                  setUrl("");
-                  setScanState("idle");
-                }}
-                style={{ width: "auto" }}
-              >
-                Scan Another Site
-              </button>
-            </div>
-          ) : (
-            <div style={{ maxWidth: 560 }}>
-              <div
-                style={{
-                  background: "var(--white)",
-                  border: `2px dashed var(--light)`,
-                  borderRadius: 8,
-                  padding: "40px 32px",
-                  transition: "border-color 0.2s",
-                }}
-              >
-                <input
-                  type="url"
-                  placeholder="https://yoursite.com"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleScan()}
-                  disabled={scanState === "loading"}
+              {scanState === "done" ? (
+                <div
                   style={{
-                    width: "100%",
-                    padding: "12px 0",
-                    border: "none",
-                    borderBottom: "1px solid var(--light)",
-                    background: "transparent",
-                    fontFamily: "'IBM Plex Mono', monospace",
-                    fontSize: 15,
-                    outline: "none",
-                    color: "var(--black)",
-                  }}
-                />
-                <p
-                  style={{
-                    fontSize: 12,
-                    color: "var(--gray)",
-                    marginTop: 12,
+                    background: "#f5f5f4",
+                    border: `2px solid var(--green)`,
+                    borderRadius: 8,
+                    padding: "40px 32px",
+                    textAlign: "center",
                   }}
                 >
-                  No signup required. Results in under 5 minutes.
-                </p>
-              </div>
-
-              <button
-                className="btn"
-                onClick={handleScan}
-                disabled={scanState === "loading" || !url.trim()}
-                style={{ width: "100%", marginTop: 16 }}
-              >
-                {scanState === "loading" ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    <span
+                  <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>
+                    ✓ Scan requested
+                  </p>
+                  <p style={{ fontSize: 13, color: "var(--gray)", marginBottom: 4 }}>
+                    {url}
+                  </p>
+                  <p style={{ fontSize: 12, color: "var(--gray)", marginBottom: 24 }}>
+                    We&apos;ll email your health report to contact@flowlens.in within 24 hours.
+                  </p>
+                  <button
+                    className="btn"
+                    onClick={() => { setUrl(""); setScanState("idle"); }}
+                    style={{ width: "auto" }}
+                  >
+                    Scan Another Site
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <div
+                    style={{
+                      background: "#f5f5f4",
+                      border: "2px solid var(--light)",
+                      borderRadius: 8,
+                      padding: "32px 28px",
+                      transition: "border-color 0.2s",
+                    }}
+                  >
+                    <p style={{ fontSize: 13, color: "var(--gray)", marginBottom: 16 }}>
+                      Enter your website URL and we&apos;ll scan it for bugs, performance issues, and accessibility problems across desktop and mobile.
+                    </p>
+                    <input
+                      type="url"
+                      placeholder="https://yoursite.com"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleScan()}
+                      disabled={scanState === "loading"}
                       style={{
-                        width: 14,
-                        height: 14,
-                        border: "2px solid var(--gray)",
-                        borderTopColor: "var(--white)",
-                        borderRadius: "50%",
-                        display: "inline-block",
-                        animation: "spin 1s linear infinite",
+                        width: "100%",
+                        padding: "14px 0",
+                        border: "none",
+                        borderBottom: "2px solid var(--black)",
+                        background: "transparent",
+                        fontFamily: "'IBM Plex Mono', monospace",
+                        fontSize: 16,
+                        outline: "none",
+                        color: "var(--black)",
                       }}
                     />
-                    Scanning...
-                  </span>
-                ) : (
-                  "Scan Free"
-                )}
-              </button>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
+                      <p style={{ fontSize: 11, color: "var(--gray)" }}>
+                        No signup required
+                      </p>
+                      <p style={{ fontSize: 11, color: "var(--gray)" }}>
+                        Results in &lt; 5 min
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    className="btn"
+                    onClick={handleScan}
+                    disabled={scanState === "loading" || !url.trim()}
+                    style={{ width: "100%", marginTop: 12, padding: "16px 28px" }}
+                  >
+                    {scanState === "loading" ? (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                        <span
+                          style={{
+                            width: 14,
+                            height: 14,
+                            border: "2px solid var(--gray)",
+                            borderTopColor: "var(--white)",
+                            borderRadius: "50%",
+                            display: "inline-block",
+                            animation: "spin 1s linear infinite",
+                          }}
+                        />
+                        Scanning...
+                      </span>
+                    ) : (
+                      "Scan Free →"
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </div>
       </section>
 
@@ -399,6 +391,91 @@ export default function Home() {
                 </p>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Why FlowLens */}
+      <section
+        style={{
+          padding: "80px 0",
+          borderBottom: "1px solid var(--black)",
+          background: "#f5f5f4",
+        }}
+      >
+        <div className="container">
+          <p className="label" style={{ marginBottom: 40 }}>
+            Why FlowLens
+          </p>
+          <div
+            className="hero-grid"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 60,
+              alignItems: "start",
+            }}
+          >
+            <div>
+              <h2
+                className="serif"
+                style={{ fontSize: 36, marginBottom: 16, letterSpacing: "-0.02em" }}
+              >
+                Not a scanner.
+                <br />
+                A <em>service</em>.
+              </h2>
+              <p style={{ color: "var(--gray)", fontSize: 14, maxWidth: 380, lineHeight: 1.7 }}>
+                Most testing tools scan once and give you a report. FlowLens
+                guards your site every day of the year — tracking bugs over
+                time, detecting regressions after deploys, and alerting you the
+                moment something breaks. Like having a QA engineer on your team
+                who never takes a day off.
+              </p>
+            </div>
+            <div>
+              {[
+                {
+                  title: "Autonomous flow discovery",
+                  desc: "No test scripts needed. FlowLens discovers every navigable flow on your site automatically — login, checkout, search, settings.",
+                },
+                {
+                  title: "Continuous daily monitoring",
+                  desc: "Your site is scanned every day. Changes are tracked over time. You always know if things are getting better or worse.",
+                },
+                {
+                  title: "Health score & trends",
+                  desc: "A single score (0–100) that tells you your site's quality. Tracked daily. Show it in standups. Rally the team around it.",
+                },
+                {
+                  title: "Multi-viewport testing",
+                  desc: "Every page tested on desktop, tablet, and mobile. Responsive bugs caught before your users hit them.",
+                },
+                {
+                  title: "Bug lifecycle tracking",
+                  desc: "Every bug has a birthday, an age, and a death date. Know when it appeared, how long it's been open, and when it was fixed.",
+                },
+                {
+                  title: "Deploy correlation",
+                  desc: "Connect your CI/CD. When a regression appears, FlowLens tells you which deploy caused it.",
+                },
+              ].map((f) => (
+                <div
+                  key={f.title}
+                  style={{
+                    padding: "14px 0",
+                    borderBottom: "1px solid var(--light)",
+                  }}
+                >
+                  <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>
+                    {f.title}
+                  </p>
+                  <p style={{ fontSize: 12, color: "var(--gray)", lineHeight: 1.6 }}>
+                    {f.desc}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
