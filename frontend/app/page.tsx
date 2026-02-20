@@ -19,11 +19,23 @@ import {
 
 export default function Home() {
   const [url, setUrl] = useState("");
+  const [scanState, setScanState] = useState<"idle" | "loading" | "done">("idle");
+
+  const handleScan = () => {
+    if (!url.trim()) return;
+    let normalizedUrl = url.trim();
+    if (!normalizedUrl.startsWith("http")) {
+      normalizedUrl = `https://${normalizedUrl}`;
+      setUrl(normalizedUrl);
+    }
+    setScanState("loading");
+    setTimeout(() => setScanState("done"), 2000);
+  };
 
   return (
     <div className="min-h-screen" style={{ background: "var(--bg)" }}>
       <Nav />
-      <Hero url={url} setUrl={setUrl} />
+      <Hero url={url} setUrl={setUrl} scanState={scanState} onScan={handleScan} />
       <HowItWorks />
       <Features />
       <DailyBriefingPreview />
@@ -51,20 +63,32 @@ function Nav() {
         <div className="flex items-center gap-6">
           <a
             href="#how-it-works"
-            className="text-sm hidden sm:block"
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" });
+            }}
+            className="text-sm hidden sm:block hover:opacity-70 transition-opacity"
             style={{ color: "var(--text-secondary)" }}
           >
             How it works
           </a>
           <a
             href="#features"
-            className="text-sm hidden sm:block"
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById("features")?.scrollIntoView({ behavior: "smooth" });
+            }}
+            className="text-sm hidden sm:block hover:opacity-70 transition-opacity"
             style={{ color: "var(--text-secondary)" }}
           >
             Features
           </a>
           <a
             href="#scan"
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById("scan")?.scrollIntoView({ behavior: "smooth" });
+            }}
             className="text-sm font-medium px-4 py-1.5 rounded-lg transition-colors"
             style={{
               background: "var(--accent)",
@@ -82,9 +106,13 @@ function Nav() {
 function Hero({
   url,
   setUrl,
+  scanState,
+  onScan,
 }: {
   url: string;
   setUrl: (u: string) => void;
+  scanState: "idle" | "loading" | "done";
+  onScan: () => void;
 }) {
   return (
     <section className="pt-32 pb-20 px-6" id="scan">
@@ -126,42 +154,100 @@ function Hero({
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
         >
-          <div
-            className="flex flex-col sm:flex-row gap-3 max-w-lg mx-auto p-2 rounded-xl"
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
-            }}
-          >
-            <input
-              type="url"
-              placeholder="https://yoursite.com"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              className="flex-1 px-4 py-3 text-[15px] rounded-lg outline-none placeholder:text-[var(--text-tertiary)]"
-              style={{ background: "var(--bg)" }}
-            />
-            <button
-              className="px-6 py-3 rounded-lg font-medium text-[15px] text-white transition-all flex items-center justify-center gap-2 cursor-pointer"
-              style={{ background: "var(--accent)" }}
-              onMouseEnter={(e) =>
-                (e.currentTarget.style.background = "var(--accent-hover)")
-              }
-              onMouseLeave={(e) =>
-                (e.currentTarget.style.background = "var(--accent)")
-              }
+          {scanState === "done" ? (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="max-w-lg mx-auto p-6 rounded-xl text-center"
+              style={{
+                background: "var(--success-light)",
+                border: "1px solid var(--accent-muted)",
+              }}
             >
-              Scan Free
-              <ArrowRight size={16} />
-            </button>
-          </div>
-          <p
-            className="text-xs mt-3"
-            style={{ color: "var(--text-tertiary)" }}
-          >
-            No signup required. Results in under 5 minutes.
-          </p>
+              <CheckCircle2
+                size={32}
+                className="mx-auto mb-3"
+                style={{ color: "var(--accent)" }}
+              />
+              <p className="font-semibold text-[15px] mb-1">
+                Scan requested for {url}
+              </p>
+              <p
+                className="text-sm"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                We&apos;ll email your full health report to{" "}
+                <span className="font-medium">contact@flowlens.in</span> within
+                24 hours.
+              </p>
+              <button
+                onClick={() => {
+                  setUrl("");
+                  onScan(); // reset handled by parent
+                  window.location.reload();
+                }}
+                className="mt-4 text-sm font-medium cursor-pointer"
+                style={{ color: "var(--accent)" }}
+              >
+                Scan another site
+              </button>
+            </motion.div>
+          ) : (
+            <>
+              <div
+                className="flex flex-col sm:flex-row gap-3 max-w-lg mx-auto p-2 rounded-xl"
+                style={{
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+                }}
+              >
+                <input
+                  type="url"
+                  placeholder="https://yoursite.com"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && onScan()}
+                  disabled={scanState === "loading"}
+                  className="flex-1 px-4 py-3 text-[15px] rounded-lg outline-none placeholder:text-[var(--text-tertiary)] disabled:opacity-60"
+                  style={{ background: "var(--bg)" }}
+                />
+                <button
+                  onClick={onScan}
+                  disabled={scanState === "loading" || !url.trim()}
+                  className="px-6 py-3 rounded-lg font-medium text-[15px] text-white transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                  style={{ background: "var(--accent)" }}
+                  onMouseEnter={(e) => {
+                    if (scanState !== "loading")
+                      e.currentTarget.style.background = "var(--accent-hover)";
+                  }}
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.background = "var(--accent)")
+                  }
+                >
+                  {scanState === "loading" ? (
+                    <>
+                      <span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+                      Scanning...
+                    </>
+                  ) : (
+                    <>
+                      Scan Free
+                      <ArrowRight size={16} />
+                    </>
+                  )}
+                </button>
+              </div>
+              <p
+                className="text-xs mt-3"
+                style={{ color: "var(--text-tertiary)" }}
+              >
+                {scanState === "loading"
+                  ? "Analyzing your site..."
+                  : "No signup required. Results in under 5 minutes."}
+              </p>
+            </>
+          )}
         </motion.div>
 
         <motion.div
@@ -565,6 +651,10 @@ function CTA() {
         </p>
         <a
           href="#scan"
+          onClick={(e) => {
+            e.preventDefault();
+            document.getElementById("scan")?.scrollIntoView({ behavior: "smooth" });
+          }}
           className="inline-flex items-center gap-2 px-8 py-3 rounded-lg font-medium text-white transition-colors"
           style={{ background: "var(--accent)" }}
         >
