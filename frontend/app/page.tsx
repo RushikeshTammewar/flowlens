@@ -342,45 +342,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Stats — social proof */}
-      <section
-        style={{
-          padding: "32px 0",
-          borderBottom: "1px solid var(--black)",
-          background: "var(--white)",
-        }}
-      >
-        <div className="container">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "center",
-              gap: 64,
-              flexWrap: "wrap",
-            }}
-          >
-            {[
-              { value: "20+", label: "Bug types detected" },
-              { value: "4", label: "Detection categories" },
-              { value: "2", label: "Viewports per crawl" },
-              { value: "< 5 min", label: "Time to first report" },
-            ].map((stat) => (
-              <div key={stat.label} style={{ textAlign: "center" }}>
-                <p
-                  className="serif"
-                  style={{ fontSize: 28, letterSpacing: "-0.02em" }}
-                >
-                  {stat.value}
-                </p>
-                <p style={{ fontSize: 11, color: "var(--gray)", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 4 }}>
-                  {stat.label}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* How It Works */}
       <section
         id="how"
