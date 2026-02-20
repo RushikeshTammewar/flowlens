@@ -40,7 +40,7 @@ function Nav() {
       className="fixed top-0 w-full z-50 border-b backdrop-blur-md"
       style={{
         borderColor: "var(--border)",
-        background: "rgba(250, 250, 249, 0.85)",
+        background: "rgba(250, 250, 248, 0.85)",
       }}
     >
       <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
