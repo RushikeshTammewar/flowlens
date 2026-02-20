@@ -1,30 +1,15 @@
 @import "tailwindcss";
 
-:root {
-  --bg: #FAFAF8;
-  --surface: #FFFFFF;
-  --text-primary: #1C1C1A;
-  --text-secondary: #5C5C57;
-  --text-tertiary: #94938E;
-  --border: #E2E1DC;
-  --border-light: #EDECE8;
-  --accent: #4B7A5C;
-  --accent-hover: #3D6A4D;
-  --accent-light: #EEF4F0;
-  --accent-muted: #A3C4AE;
-  --success: #3D7A50;
-  --success-light: #EEF4F0;
-  --warning: #B8860B;
-  --warning-light: #FBF6EA;
-  --critical: #B83A2E;
-  --critical-light: #FAEEEC;
-}
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap');
 
-@theme inline {
-  --color-background: var(--bg);
-  --color-foreground: var(--text-primary);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+:root {
+  --black: #0f0f0f;
+  --white: #fafaf9;
+  --gray: #737373;
+  --light: #e7e5e4;
+  --green: #16a34a;
+  --red: #dc2626;
+  --amber: #b45309;
 }
 
 * {
@@ -33,11 +18,14 @@
 }
 
 body {
-  background: var(--bg);
-  color: var(--text-primary);
+  font-family: 'IBM Plex Mono', monospace;
+  background: var(--white);
+  color: var(--black);
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 ::selection {
-  background: var(--accent-light);
-  color: var(--accent);
+  background: var(--black);
+  color: var(--white);
 }
