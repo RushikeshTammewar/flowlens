@@ -1,9 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.flowlens.in";
+const CLEARBIT_URL = "https://autocomplete.clearbit.com/v1/companies/suggest";
+
+interface Suggestion {
+  name: string;
+  domain: string;
+  source: "history" | "clearbit";
+}
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -12,6 +19,104 @@ export default function Home() {
   );
   const [scanError, setScanError] = useState("");
   const router = useRouter();
+
+  // Autocomplete state
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(-1);
+  const [scanHistory, setScanHistory] = useState<string[]>([]);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const blurRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/v1/scans`)
+      .then(r => r.json())
+      .then((scans: Array<{ url: string }>) => {
+        const urls = [...new Set(scans.map(s => s.url))];
+        setScanHistory(urls);
+      })
+      .catch(() => {});
+  }, []);
+
+  const fetchSuggestions = useCallback(async (query: string) => {
+    if (query.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    const clean = query.replace(/^https?:\/\//, "").replace(/^www\./, "");
+    const merged: Suggestion[] = [];
+    const seenDomains = new Set<string>();
+
+    const historyMatches = scanHistory.filter(u => {
+      const domain = u.replace(/^https?:\/\//, "").replace(/^www\./, "");
+      return domain.toLowerCase().includes(clean.toLowerCase());
+    });
+    for (const u of historyMatches.slice(0, 3)) {
+      const domain = u.replace(/^https?:\/\//, "").replace(/\/$/, "");
+      if (!seenDomains.has(domain)) {
+        seenDomains.add(domain);
+        merged.push({ name: domain, domain, source: "history" });
+      }
+    }
+
+    try {
+      const res = await fetch(`${CLEARBIT_URL}?query=${encodeURIComponent(clean)}`);
+      const results: Array<{ name: string; domain: string }> = await res.json();
+      for (const r of results.slice(0, 5)) {
+        if (!seenDomains.has(r.domain)) {
+          seenDomains.add(r.domain);
+          merged.push({ name: r.name, domain: r.domain, source: "clearbit" });
+        }
+      }
+    } catch {}
+
+    setSuggestions(merged);
+    setHighlightIdx(-1);
+    if (merged.length > 0) setShowSuggestions(true);
+  }, [scanHistory]);
+
+  const handleInputChange = (value: string) => {
+    setUrl(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!value.trim()) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    debounceRef.current = setTimeout(() => fetchSuggestions(value), 250);
+  };
+
+  const selectSuggestion = (s: Suggestion) => {
+    setUrl(`https://${s.domain}`);
+    setShowSuggestions(false);
+    setSuggestions([]);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!showSuggestions || suggestions.length === 0) {
+      if (e.key === "Enter") handleScan();
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightIdx(i => Math.min(i + 1, suggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightIdx(i => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (highlightIdx >= 0) {
+        selectSuggestion(suggestions[highlightIdx]);
+      } else {
+        setShowSuggestions(false);
+        handleScan();
+      }
+    } else if (e.key === "Escape") {
+      setShowSuggestions(false);
+    }
+  };
 
   const handleScan = async () => {
     if (!url.trim()) return;
@@ -22,6 +127,7 @@ export default function Home() {
     }
     setScanState("loading");
     setScanError("");
+    setShowSuggestions(false);
 
     try {
       const res = await fetch(`${API_URL}/api/v1/scan`, {
@@ -300,25 +406,106 @@ export default function Home() {
                     <p style={{ fontSize: 13, color: "var(--gray)", marginBottom: 16 }}>
                       Enter your website URL and we&apos;ll scan it for bugs, performance issues, and accessibility problems across desktop and mobile.
                     </p>
-                    <input
-                      type="url"
-                      placeholder="https://yoursite.com"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleScan()}
-                      disabled={scanState === "loading"}
-                      style={{
-                        width: "100%",
-                        padding: "14px 0",
-                        border: "none",
-                        borderBottom: "2px solid var(--black)",
-                        background: "transparent",
-                        fontFamily: "'IBM Plex Mono', monospace",
-                        fontSize: 16,
-                        outline: "none",
-                        color: "var(--black)",
-                      }}
-                    />
+                    <div style={{ position: "relative" }}>
+                      <input
+                        type="url"
+                        placeholder="https://yoursite.com"
+                        value={url}
+                        onChange={(e) => handleInputChange(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                        onBlur={() => { blurRef.current = setTimeout(() => setShowSuggestions(false), 200); }}
+                        disabled={scanState === "loading"}
+                        autoComplete="off"
+                        style={{
+                          width: "100%",
+                          padding: "14px 0",
+                          border: "none",
+                          borderBottom: "2px solid var(--black)",
+                          background: "transparent",
+                          fontFamily: "'IBM Plex Mono', monospace",
+                          fontSize: 16,
+                          outline: "none",
+                          color: "var(--black)",
+                        }}
+                      />
+
+                      {showSuggestions && suggestions.length > 0 && (
+                        <div
+                          ref={dropdownRef}
+                          style={{
+                            position: "absolute",
+                            top: "100%",
+                            left: 0,
+                            right: 0,
+                            background: "#fff",
+                            border: "1px solid var(--light)",
+                            borderTop: "none",
+                            borderRadius: "0 0 8px 8px",
+                            boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
+                            zIndex: 50,
+                            maxHeight: 280,
+                            overflowY: "auto",
+                          }}
+                        >
+                          {suggestions.some(s => s.source === "history") && (
+                            <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--gray)", padding: "8px 16px 4px", margin: 0 }}>
+                              Previously scanned
+                            </p>
+                          )}
+                          {suggestions.filter(s => s.source === "history").map((s, i) => {
+                            const idx = suggestions.indexOf(s);
+                            return (
+                              <div
+                                key={`h-${s.domain}`}
+                                onMouseDown={() => { if (blurRef.current) clearTimeout(blurRef.current); selectSuggestion(s); }}
+                                onMouseEnter={() => setHighlightIdx(idx)}
+                                style={{
+                                  padding: "10px 16px",
+                                  cursor: "pointer",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 10,
+                                  background: highlightIdx === idx ? "#f5f5f4" : "transparent",
+                                  transition: "background 0.1s",
+                                }}
+                              >
+                                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#28c840", flexShrink: 0 }} />
+                                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--black)" }}>{s.domain}</span>
+                              </div>
+                            );
+                          })}
+
+                          {suggestions.some(s => s.source === "clearbit") && (
+                            <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--gray)", padding: "8px 16px 4px", margin: 0, borderTop: suggestions.some(s => s.source === "history") ? "1px solid var(--light)" : "none" }}>
+                              Suggestions
+                            </p>
+                          )}
+                          {suggestions.filter(s => s.source === "clearbit").map((s) => {
+                            const idx = suggestions.indexOf(s);
+                            return (
+                              <div
+                                key={`c-${s.domain}`}
+                                onMouseDown={() => { if (blurRef.current) clearTimeout(blurRef.current); selectSuggestion(s); }}
+                                onMouseEnter={() => setHighlightIdx(idx)}
+                                style={{
+                                  padding: "10px 16px",
+                                  cursor: "pointer",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  background: highlightIdx === idx ? "#f5f5f4" : "transparent",
+                                  transition: "background 0.1s",
+                                }}
+                              >
+                                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--black)" }}>{s.domain}</span>
+                                <span style={{ fontSize: 11, color: "var(--gray)" }}>{s.name}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
                       <p style={{ fontSize: 11, color: "var(--gray)" }}>
                         No signup required
