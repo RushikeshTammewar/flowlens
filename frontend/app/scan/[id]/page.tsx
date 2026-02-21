@@ -686,6 +686,12 @@ function FlowMapView({ graph, bugs }: { graph?: SiteGraph; bugs: Bug[] }) {
   const rootNode = graph.nodes.find(n => n.path === "/" || n.path === "") || graph.nodes[0];
   const childNodes = graph.nodes.filter(n => n.id !== rootNode?.id);
 
+  const nodeLabel = (node: GraphNode) => {
+    const label = node.label || "";
+    if (label && label !== "/" && label.length <= 25) return label;
+    return truncPath(node.path);
+  };
+
   return (
     <div>
       <p style={{ color: "#555", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 24 }}>
@@ -695,14 +701,14 @@ function FlowMapView({ graph, bugs }: { graph?: SiteGraph; bugs: Bug[] }) {
       {rootNode && (
         <div style={{ textAlign: "center", marginBottom: 32 }}>
           <div style={{
-            display: "inline-block", padding: "16px 32px", borderRadius: 8,
+            display: "inline-block", padding: "16px 32px", borderRadius: 8, maxWidth: 280,
             background: nodeColors(rootNode).bg, border: `2px solid ${nodeColors(rootNode).border}`,
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
               <span style={{ width: 8, height: 8, borderRadius: "50%", background: nodeColors(rootNode).dot, display: "inline-block" }} />
-              <span style={{ color: "#fff", fontSize: 14, fontWeight: 500 }}>{rootNode.label || "/"}</span>
+              <span style={{ color: "#fff", fontSize: 14, fontWeight: 500 }}>{nodeLabel(rootNode)}</span>
             </div>
-            <p style={{ color: "#666", fontSize: 11, marginTop: 4 }}>{shortPath(rootNode.path)}</p>
+            <p style={{ color: "#666", fontSize: 11, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{truncPath(rootNode.path)}</p>
             {rootNode.bugs > 0 && (
               <span style={{ display: "inline-block", marginTop: 6, padding: "2px 8px", fontSize: 10, background: SEV_BG[rootNode.max_severity || "P3"], color: SEV_COLORS[rootNode.max_severity || "P3"], borderRadius: 3 }}>
                 {rootNode.bugs} bug{rootNode.bugs !== 1 ? "s" : ""}
@@ -714,49 +720,51 @@ function FlowMapView({ graph, bugs }: { graph?: SiteGraph; bugs: Bug[] }) {
       )}
 
       {childNodes.length > 0 && (
-        <>
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <div style={{ height: 1, background: "#333", width: `min(${Math.min(childNodes.length, 4) * 25}%, 90%)` }} />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(childNodes.length, 4)}, 1fr)`, gap: 12 }}>
-            {childNodes.map((node) => {
-              const colors = nodeColors(node);
-              const pageBugs = bugs.filter(b => b.page_url === node.id);
-              return (
-                <div key={node.id} style={{ textAlign: "center" }}>
-                  <div style={{ width: 1, height: 24, background: "#333", margin: "0 auto" }} />
-                  <div style={{ padding: "14px 16px", borderRadius: 8, background: colors.bg, border: `1px solid ${colors.border}` }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center" }}>
-                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: colors.dot, display: "inline-block", flexShrink: 0 }} />
-                      <span style={{ color: "#ddd", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {node.label || shortPath(node.path)}
-                      </span>
-                    </div>
-                    <p style={{ color: "#555", fontSize: 10, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shortPath(node.path)}</p>
-                    {node.bugs > 0 && (
-                      <div style={{ marginTop: 8 }}>
-                        <span style={{ padding: "2px 8px", fontSize: 9, background: SEV_BG[node.max_severity || "P3"], color: SEV_COLORS[node.max_severity || "P3"], borderRadius: 3, textTransform: "uppercase" }}>
-                          {node.bugs} bug{node.bugs !== 1 ? "s" : ""} · {node.max_severity}
-                        </span>
-                      </div>
-                    )}
-                    {pageBugs.length > 0 && (
-                      <div style={{ marginTop: 8, textAlign: "left" }}>
-                        {pageBugs.slice(0, 3).map((b, bi) => (
-                          <div key={bi} style={{ fontSize: 10, color: "#666", padding: "2px 0", borderTop: "1px solid #1f1f1f" }}>
-                            <span style={{ color: SEV_COLORS[b.severity], marginRight: 4 }}>{b.severity}</span>
-                            {b.title.length > 35 ? b.title.slice(0, 32) + "..." : b.title}
-                          </div>
-                        ))}
-                        {pageBugs.length > 3 && <p style={{ fontSize: 9, color: "#444", marginTop: 2 }}>+{pageBugs.length - 3} more</p>}
-                      </div>
-                    )}
-                  </div>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+          gap: 12,
+        }}>
+          {childNodes.map((node) => {
+            const colors = nodeColors(node);
+            const pageBugs = bugs.filter(b => b.page_url === node.id);
+            return (
+              <div key={node.id} style={{
+                padding: "14px 16px", borderRadius: 8,
+                background: colors.bg, border: `1px solid ${colors.border}`,
+                overflow: "hidden", minWidth: 0,
+              }} title={node.id}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: colors.dot, display: "inline-block", flexShrink: 0 }} />
+                  <span style={{ color: "#ddd", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                    {nodeLabel(node)}
+                  </span>
                 </div>
-              );
-            })}
-          </div>
-        </>
+                <p style={{ color: "#555", fontSize: 10, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {truncPath(node.path)}
+                </p>
+                {node.bugs > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <span style={{ padding: "2px 8px", fontSize: 9, background: SEV_BG[node.max_severity || "P3"], color: SEV_COLORS[node.max_severity || "P3"], borderRadius: 3, textTransform: "uppercase" }}>
+                      {node.bugs} bug{node.bugs !== 1 ? "s" : ""} · {node.max_severity}
+                    </span>
+                  </div>
+                )}
+                {pageBugs.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    {pageBugs.slice(0, 2).map((b, bi) => (
+                      <div key={bi} style={{ fontSize: 10, color: "#666", padding: "2px 0", borderTop: "1px solid #1f1f1f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <span style={{ color: SEV_COLORS[b.severity], marginRight: 4 }}>{b.severity}</span>
+                        {b.title.length > 30 ? b.title.slice(0, 27) + "..." : b.title}
+                      </div>
+                    ))}
+                    {pageBugs.length > 2 && <p style={{ fontSize: 9, color: "#444", marginTop: 2 }}>+{pageBugs.length - 2} more</p>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       <div style={{ display: "flex", gap: 24, marginTop: 32, justifyContent: "center" }}>
@@ -878,6 +886,25 @@ function shortPath(urlOrPath: string) {
   }
   if (p === "/" || p === "") return "/";
   return p.length > 30 ? p.slice(0, 27) + "..." : p;
+}
+
+function truncPath(pathOrUrl: string) {
+  if (!pathOrUrl || pathOrUrl === "/" || pathOrUrl === "") return "/";
+  let p = pathOrUrl;
+  try {
+    const u = new URL(pathOrUrl);
+    p = u.pathname + (u.search ? "?" + u.search.slice(1, 20) + "..." : "");
+  } catch {
+    p = p.replace("https://", "").replace("http://", "");
+    const slashIdx = p.indexOf("/");
+    if (slashIdx >= 0) p = p.substring(slashIdx);
+  }
+  if (p === "/") return "/";
+  const segments = p.split("/").filter(Boolean);
+  if (segments.length === 0) return "/";
+  const last = segments[segments.length - 1];
+  const clean = last.length > 25 ? last.slice(0, 22) + "..." : last;
+  return segments.length > 1 ? "/.../" + clean : "/" + clean;
 }
 
 function nodeStatusBg(node: LiveNode): string {
