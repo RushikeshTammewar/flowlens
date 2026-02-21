@@ -52,9 +52,25 @@ def main():
         print_report(result)
 
 
+def _cli_progress(event_type: str, data: dict):
+    if event_type == "visiting_page":
+        print(f"   [{data.get('page_number', '?')}/{data.get('total_discovered', '?')}] Visiting {data.get('url', '')[:80]}")
+    elif event_type == "elements_found":
+        total = data.get("total", 0)
+        print(f"         Found {total} interactive elements")
+    elif event_type == "bug_found":
+        print(f"         🐛 {data.get('severity', '')} {data.get('title', '')[:80]}")
+    elif event_type == "page_discovered":
+        via = data.get("via", "")
+        if via:
+            print(f"         → Discovered {data.get('url', '')[:60]} (via {via})")
+    elif event_type == "scan_complete":
+        print(f"\n   ✓ Complete: {data.get('pages', 0)} pages, {data.get('bugs', 0)} bugs, {data.get('actions_taken', 0)} actions\n")
+
+
 async def run_scan(url: str, max_pages: int, viewports: list[str]):
     try:
-        scanner = FlowLensScanner(url=url, max_pages=max_pages, viewports=viewports)
+        scanner = FlowLensScanner(url=url, max_pages=max_pages, viewports=viewports, on_progress=_cli_progress)
         return await scanner.scan()
     except Exception as e:
         print(f"\n  Error during scan: {e}")
