@@ -53,8 +53,12 @@ def main():
 
 
 async def run_scan(url: str, max_pages: int, viewports: list[str]):
-    scanner = FlowLensScanner(url=url, max_pages=max_pages, viewports=viewports)
-    return await scanner.scan()
+    try:
+        scanner = FlowLensScanner(url=url, max_pages=max_pages, viewports=viewports)
+        return await scanner.scan()
+    except Exception as e:
+        print(f"\n  Error during scan: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
