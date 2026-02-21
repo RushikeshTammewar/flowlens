@@ -5,6 +5,13 @@ export const metadata: Metadata = {
   title: "FlowLens — Your AI QA Engineer. Always On.",
   description:
     "Continuous website quality monitoring. FlowLens tests every flow on your site daily, tracks bugs over time, and delivers a morning briefing of what changed.",
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "32x32" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
   openGraph: {
     title: "FlowLens — Your AI QA Engineer",
     description:
