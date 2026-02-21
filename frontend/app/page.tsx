@@ -270,6 +270,24 @@ export default function Home() {
           .nav-links {
             display: none !important;
           }
+          .briefing-cols {
+            grid-template-columns: 1fr !important;
+          }
+          .briefing-score {
+            font-size: 36px !important;
+          }
+          .briefing-meta {
+            display: none !important;
+          }
+          .scan-card {
+            padding: 20px 16px !important;
+          }
+          .scan-card p {
+            font-size: 12px !important;
+          }
+          .section-padding {
+            padding: 48px 0 !important;
+          }
         }
       `}</style>
 
@@ -863,21 +881,21 @@ export default function Home() {
                 }}
               >
                 <span
-                  className="serif"
+                  className="serif briefing-score"
                   style={{ fontSize: 56, color: "#fff", letterSpacing: "-0.03em" }}
                 >
                   78
                 </span>
                 <span style={{ fontSize: 18, color: "#666" }}>/100</span>
                 <span style={{ fontSize: 14, color: "#28c840", marginLeft: 8 }}>↑ 3</span>
-                <span style={{ fontSize: 12, color: "#666", marginLeft: "auto" }}>
+                <span className="briefing-meta" style={{ fontSize: 12, color: "#666", marginLeft: "auto" }}>
                   Feb 21, 2026 · 847 pages · 14 flows
                 </span>
               </div>
 
               {/* Three columns: New / Fixed / Performance */}
               <div
-                className="briefing-grid"
+                className="briefing-grid briefing-cols"
                 style={{
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr 1fr",

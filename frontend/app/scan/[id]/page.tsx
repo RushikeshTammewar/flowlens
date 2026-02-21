@@ -354,18 +354,19 @@ function LiveScanView({
       </div>
 
       {/* Counters */}
-      <div style={{ display: "flex", gap: 1, marginBottom: 32, background: "#2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+      <div className="scan-counters" style={{ display: "flex", flexWrap: "wrap", gap: 1, marginBottom: 32, background: "#2a2a2a", borderRadius: 8, overflow: "hidden" }}>
         {([
           { label: "Pages", value: counters.pages, color: "#fff" },
           { label: "Elements", value: counters.elements, color: "#888" },
           { label: "Actions", value: counters.actions, color: "#888" },
           { label: "Bugs", value: counters.bugs, color: counters.bugs > 0 ? "#ff5f57" : "#28c840" },
         ]).map(c => (
-          <div key={c.label} style={{ flex: 1, background: "#141414", padding: "20px 24px", textAlign: "center" }}>
+          <div key={c.label} className="scan-counter-item" style={{ flex: 1, minWidth: 0, background: "#141414", padding: "20px 24px", textAlign: "center" }}>
             <motion.p
               key={c.value}
               initial={{ scale: 1.3, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
+              className="scan-counter-value"
               style={{ fontFamily: "'Instrument Serif', serif", fontSize: 36, color: c.color, lineHeight: 1 }}
             >
               {c.value}
@@ -376,9 +377,9 @@ function LiveScanView({
       </div>
 
       {/* Graph + Log layout */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 24, alignItems: "start" }}>
+      <div className="scan-graph-log" style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 24, alignItems: "start" }}>
         {/* Live graph */}
-        <div style={{ background: "#141414", borderRadius: 8, border: "1px solid #2a2a2a", padding: 24, minHeight: 400 }}>
+        <div style={{ background: "#141414", borderRadius: 8, border: "1px solid #2a2a2a", padding: 24, minHeight: 300 }}>
           <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", color: "#555", marginBottom: 16 }}>
             Site Graph · {nodeArray.length} pages discovered
           </p>
@@ -416,6 +417,21 @@ function LiveScanView({
         @keyframes visitPulse {
           0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.5); }
           50% { box-shadow: 0 0 0 6px rgba(59,130,246,0); }
+        }
+        @media (max-width: 640px) {
+          .scan-counters { flex-wrap: wrap !important; }
+          .scan-counter-item { flex: 1 1 45% !important; min-width: 45% !important; padding: 14px 12px !important; }
+          .scan-counter-value { font-size: 28px !important; }
+          .scan-graph-log { grid-template-columns: 1fr !important; }
+          .scan-hero-row { flex-direction: column !important; }
+          .scan-score-num { font-size: 48px !important; }
+          .scan-bug-row { gap: 8px !important; }
+          .scan-bug-cat, .scan-bug-vp { display: none !important; }
+          .scan-bug-detail { padding-left: 16px !important; }
+          .scan-tabs button { padding: 12px 14px !important; font-size: 10px !important; }
+          .scan-perf-grid { grid-template-columns: 1fr !important; }
+          .scan-page-url { word-break: break-all; font-size: 12px !important; }
+          .scan-flowmap-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important; }
         }
       `}</style>
     </div>
@@ -514,7 +530,7 @@ function CompletedView({
       {/* Hero section */}
       <section style={{ padding: "48px 0 40px", borderBottom: "1px solid #2a2a2a" }}>
         <p style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: "#666", marginBottom: 12 }}>Scan Report</p>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 24 }}>
+        <div className="scan-hero-row" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 24 }}>
           <div>
             <h1 style={{ fontFamily: "'Instrument Serif', serif", fontSize: 32, color: "#fff", marginBottom: 8, fontWeight: 400 }}>{shortUrl(data.url)}</h1>
             <p style={{ color: "#666", fontSize: 12 }}>
@@ -523,7 +539,7 @@ function CompletedView({
           </div>
           <div style={{ textAlign: "right" }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-              <span style={{ fontFamily: "'Instrument Serif', serif", fontSize: 64, color: scoreColor(data.health_score ?? 0), lineHeight: 1 }}>{data.health_score}</span>
+              <span className="scan-score-num" style={{ fontFamily: "'Instrument Serif', serif", fontSize: 64, color: scoreColor(data.health_score ?? 0), lineHeight: 1 }}>{data.health_score}</span>
               <span style={{ fontSize: 18, color: "#555" }}>/100</span>
             </div>
             <span style={{
@@ -552,11 +568,11 @@ function CompletedView({
       </section>
 
       {/* Tab navigation */}
-      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #2a2a2a", overflowX: "auto" }}>
+      <div className="scan-tabs" style={{ display: "flex", gap: 0, borderBottom: "1px solid #2a2a2a", overflowX: "auto" }}>
         {([
           { key: "bugs" as const, label: `Bugs (${data.bugs.length})` },
           { key: "flowmap" as const, label: "Flow Map" },
-          { key: "performance" as const, label: "Performance" },
+          { key: "performance" as const, label: "Perf" },
           { key: "pages" as const, label: `Pages (${data.pages_tested})` },
         ]).map(tab => (
           <button key={tab.key} onClick={() => setActiveTab(tab.key)} style={{
@@ -608,18 +624,19 @@ function BugsTab({ bugs, expandedBug, setExpandedBug }: { bugs: Bug[]; expandedB
         <div key={i} style={{ borderBottom: "1px solid #1f1f1f" }}>
           <div
             onClick={() => setExpandedBug(expandedBug === i ? null : i)}
+            className="scan-bug-row"
             style={{ padding: "16px 0", cursor: "pointer", display: "flex", alignItems: "center", gap: 16 }}
           >
             <span style={{ color: SEV_COLORS[bug.severity] || "#888", fontWeight: 700, width: 32, flexShrink: 0 }}>{bug.severity}</span>
             <span style={{ color: "#555", width: 16, flexShrink: 0 }} title={`${bug.confidence} confidence`}>{CONF_DOTS[bug.confidence] || "?"}</span>
-            <span style={{ flex: 1, color: "#ddd" }}>{bug.title}</span>
-            <span style={{ color: "#555", fontSize: 11, flexShrink: 0 }}>{CAT_LABELS[bug.category] || bug.category}</span>
-            <span style={{ color: "#444", fontSize: 11, width: 60, textAlign: "right", textTransform: "uppercase", flexShrink: 0 }}>{bug.viewport}</span>
+            <span style={{ flex: 1, color: "#ddd", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bug.title}</span>
+            <span className="scan-bug-cat" style={{ color: "#555", fontSize: 11, flexShrink: 0 }}>{CAT_LABELS[bug.category] || bug.category}</span>
+            <span className="scan-bug-vp" style={{ color: "#444", fontSize: 11, width: 60, textAlign: "right", textTransform: "uppercase", flexShrink: 0 }}>{bug.viewport}</span>
             <span style={{ color: "#444", fontSize: 14, flexShrink: 0 }}>{expandedBug === i ? "−" : "+"}</span>
           </div>
 
           {expandedBug === i && (
-            <div style={{ padding: "0 0 24px 48px" }}>
+            <div className="scan-bug-detail" style={{ padding: "0 0 24px 48px" }}>
               <p style={{ color: "#999", lineHeight: 1.7, marginBottom: 20, maxWidth: 700 }}>{bug.description}</p>
               <div style={{ marginBottom: 16 }}>
                 <span style={{ color: "#555", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em" }}>Page: </span>
@@ -720,7 +737,7 @@ function FlowMapView({ graph, bugs }: { graph?: SiteGraph; bugs: Bug[] }) {
       )}
 
       {childNodes.length > 0 && (
-        <div style={{
+        <div className="scan-flowmap-grid" style={{
           display: "grid",
           gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
           gap: 12,
@@ -785,7 +802,7 @@ function FlowMapView({ graph, bugs }: { graph?: SiteGraph; bugs: Bug[] }) {
 
 function PerformanceTab({ metrics }: { metrics: Metric[] }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 1, background: "#2a2a2a" }}>
+    <div className="scan-perf-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 1, background: "#2a2a2a" }}>
       {metrics.map((m, i) => {
         const loadColor = m.load_time_ms < 2000 ? "#28c840" : m.load_time_ms < 3000 ? "#febc2e" : "#ff5f57";
         return (
@@ -828,7 +845,7 @@ function PagesTab({ pages }: { pages: string[] }) {
       {pages.map((page, i) => (
         <div key={i} style={{ padding: "12px 0", borderBottom: "1px solid #1f1f1f", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ color: "#28c840", flexShrink: 0 }}>✓</span>
-          <span style={{ color: "#aaa" }}>{page}</span>
+          <span className="scan-page-url" style={{ color: "#aaa", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{page}</span>
         </div>
       ))}
     </div>
