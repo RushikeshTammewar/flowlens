@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.flowlens.in";
@@ -118,44 +118,7 @@ const DARK: Theme = {
   radius: 10, codeBg: "#0f0f0f", hoverBg: "rgba(255,255,255,0.02)",
 };
 
-const LINEAR: Theme = {
-  key: "linear", label: "Linear", isDark: false,
-  bg: "#fff", bgAlt: "#fff", card: "#fff",
-  cardBorder: "#e8e8e8", cardShadow: "none",
-  text: "#1a1a1a", textSecondary: "#6b6b6b", textMuted: "#b0b0b0",
-  border: "#e8e8e8", borderSubtle: "#f3f3f3", accent: "#5e6ad2",
-  radius: 8, codeBg: "#f7f7f7", hoverBg: "#f9f9f9",
-};
-
-const NOTION: Theme = {
-  key: "notion", label: "Notion", isDark: false,
-  bg: "#fffcf7", bgAlt: "#fffcf7", card: "#fff",
-  cardBorder: "transparent", cardShadow: "0 1px 4px rgba(0,0,0,0.06)",
-  text: "#37352f", textSecondary: "#787774", textMuted: "#c3c2bf",
-  border: "#e8e5df", borderSubtle: "#f1eeea", accent: "#d9730d",
-  radius: 14, codeBg: "#f7f6f3", hoverBg: "rgba(55,53,47,0.03)",
-};
-
-const VERCEL: Theme = {
-  key: "vercel", label: "Vercel", isDark: false,
-  bg: "#fafafa", bgAlt: "#fff", card: "#fff",
-  cardBorder: "#eaeaea", cardShadow: "0 2px 8px rgba(0,0,0,0.04)",
-  text: "#000", textSecondary: "#666", textMuted: "#999",
-  border: "#eaeaea", borderSubtle: "#f5f5f5", accent: "#000",
-  radius: 8, codeBg: "#f5f5f5", hoverBg: "#fafafa",
-};
-
-const GITHUB: Theme = {
-  key: "github", label: "GitHub", isDark: false,
-  bg: "#f6f8fa", bgAlt: "#fff", card: "#fff",
-  cardBorder: "#d1d9e0", cardShadow: "0 1px 0 rgba(27,31,36,0.04)",
-  text: "#1f2328", textSecondary: "#656d76", textMuted: "#8b949e",
-  border: "#d1d9e0", borderSubtle: "#eef1f4", accent: "#1f6feb",
-  radius: 6, codeBg: "#f6f8fa", hoverBg: "rgba(208,215,222,0.12)",
-};
-
-const THEMES = [DARK, LINEAR, NOTION, VERCEL, GITHUB];
-const THEME_MAP: Record<string, Theme> = Object.fromEntries(THEMES.map(t => [t.key, t]));
+const T = DARK;
 
 const SEV_COLORS: Record<string, string> = { P0: "#ef4444", P1: "#ef4444", P2: "#f59e0b", P3: "#888", P4: "#555" };
 const SEV_BG: Record<string, string> = { P0: "rgba(239,68,68,0.1)", P1: "rgba(239,68,68,0.08)", P2: "rgba(245,158,11,0.08)", P3: "rgba(136,136,136,0.06)", P4: "rgba(85,85,85,0.04)" };
@@ -166,13 +129,12 @@ const CAT_ICONS: Record<string, string> = { functional: "⚡", performance: "⏱
 
 export default function ScanResultPage() {
   const params = useParams();
-  const searchParams = useSearchParams();
   const scanId = params.id as string;
   const [data, setData] = useState<ScanResult | null>(null);
   const [polling, setPolling] = useState(true);
   const [expandedBug, setExpandedBug] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"bugs" | "flowmap" | "performance" | "pages">("bugs");
-  const [theme, setTheme] = useState<Theme>(THEME_MAP[searchParams.get("theme") || ""] || DARK);
+  const theme = T;
 
   const [liveNodes, setLiveNodes] = useState<Map<string, LiveNode>>(new Map());
   const [liveEdges, setLiveEdges] = useState<Array<{ from: string; to: string }>>([]);
@@ -258,15 +220,7 @@ export default function ScanResultPage() {
       <header style={{ padding: "16px 0", borderBottom: `1px solid ${t.border}` }}>
         <div style={{ maxWidth: 1200, margin: "0 auto", padding: "0 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <a href="/" style={{ fontFamily: "'Instrument Serif', serif", fontSize: 24, color: t.text, textDecoration: "none" }}>FlowLens</a>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <button
-              onClick={() => { const idx = THEMES.findIndex(th => th.key === t.key); setTheme(THEMES[(idx + 1) % THEMES.length]); }}
-              style={{ background: "none", border: `1px solid ${t.border}`, borderRadius: 6, padding: "6px 12px", fontSize: 11, color: t.textSecondary, cursor: "pointer", fontFamily: "inherit" }}
-            >
-              {t.label} ↻
-            </button>
-            <a href="/" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: t.textSecondary, textDecoration: "none" }}>← New Scan</a>
-          </div>
+          <a href="/" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: t.textSecondary, textDecoration: "none" }}>← New Scan</a>
         </div>
       </header>
 
