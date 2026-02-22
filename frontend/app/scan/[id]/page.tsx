@@ -652,23 +652,110 @@ function FlowsTab({ flows, t }: { flows: FlowResult[]; t: Theme }) {
     verify: "Verify",
   };
 
+  // Calculate flow statistics
+  const passedFlows = flows.filter(f => f.status === "passed").length;
+  const failedFlows = flows.filter(f => f.status === "failed").length;
+  const partialFlows = flows.filter(f => f.status === "partial").length;
+  const successRate = Math.round((passedFlows / flows.length) * 100);
+  const totalSteps = flows.reduce((sum, f) => sum + f.steps.length, 0);
+  const totalDuration = flows.reduce((sum, f) => sum + f.duration_ms, 0);
+  const avgDuration = Math.round(totalDuration / flows.length);
+
+  // Group flows by priority
+  const groupedFlows = flows.reduce((acc, flow) => {
+    const priority = flow.flow.priority;
+    if (!acc[priority]) acc[priority] = [];
+    acc[priority].push(flow);
+    return acc;
+  }, {} as Record<number, FlowResult[]>);
+
+  const priorityLabels: Record<number, { label: string; color: string }> = {
+    1: { label: "Critical", color: "#ef4444" },
+    2: { label: "Important", color: "#f59e0b" },
+    3: { label: "Standard", color: "#3b82f6" },
+    4: { label: "Optional", color: "#8b5cf6" },
+    5: { label: "Low", color: "#6b7280" },
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      {/* Flow Summary Stats */}
+      <div style={{
+        background: t.card,
+        border: `1px solid ${t.cardBorder}`,
+        borderRadius: t.radius,
+        padding: "20px 24px",
+        boxShadow: t.cardShadow,
+      }}>
+        <p style={{ color: t.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16 }}>
+          Flow Testing Summary
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 20 }}>
+          <div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: t.text, lineHeight: 1 }}>{flows.length}</div>
+            <div style={{ fontSize: 11, color: t.textMuted, marginTop: 4 }}>Flows Tested</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: "#28c840", lineHeight: 1 }}>{successRate}%</div>
+            <div style={{ fontSize: 11, color: t.textMuted, marginTop: 4 }}>Success Rate</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: t.text, lineHeight: 1 }}>{passedFlows}/{failedFlows}/{partialFlows}</div>
+            <div style={{ fontSize: 11, color: t.textMuted, marginTop: 4 }}>Pass/Fail/Partial</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: t.text, lineHeight: 1 }}>{totalSteps}</div>
+            <div style={{ fontSize: 11, color: t.textMuted, marginTop: 4 }}>Total Steps</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: t.text, lineHeight: 1 }}>{avgDuration}ms</div>
+            <div style={{ fontSize: 11, color: t.textMuted, marginTop: 4 }}>Avg Duration</div>
+          </div>
+        </div>
+      </div>
+
       <p style={{ color: t.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
-        Flow Verifications · How the model behaved
+        Flows by Priority
       </p>
       <p style={{ color: t.textSecondary, fontSize: 12, maxWidth: 600, marginBottom: 24, lineHeight: 1.6 }}>
         FlowLens uses heuristic selector rules first. When the page structure is ambiguous, it falls back to AI to find the right element. This keeps scans fast and accurate.
       </p>
 
-      {flows.map((fr, fi) => {
-        const statusColor = fr.status === "passed" ? "#28c840" : fr.status === "failed" ? "#ef4444" : "#f59e0b";
-        const heuristicCount = fr.steps.filter(s => !s.ai_used).length;
-        const aiCount = fr.steps.filter(s => s.ai_used).length;
+      {/* Group and display flows by priority */}
+      {Object.keys(groupedFlows).sort((a, b) => Number(a) - Number(b)).map(priority => {
+        const priorityNum = Number(priority);
+        const priorityInfo = priorityLabels[priorityNum] || { label: `Priority ${priority}`, color: t.textMuted };
+        const flowsInGroup = groupedFlows[priorityNum];
 
         return (
-          <div
-            key={fi}
+          <div key={priority} style={{ marginBottom: 32 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <span style={{
+                padding: "4px 12px",
+                fontSize: 11,
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                background: `${priorityInfo.color}20`,
+                color: priorityInfo.color,
+                borderRadius: 6,
+              }}>
+                {priorityInfo.label}
+              </span>
+              <span style={{ fontSize: 12, color: t.textMuted }}>
+                {flowsInGroup.length} {flowsInGroup.length === 1 ? 'flow' : 'flows'}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {flowsInGroup.map((fr, fi) => {
+                const statusColor = fr.status === "passed" ? "#28c840" : fr.status === "failed" ? "#ef4444" : "#f59e0b";
+                const heuristicCount = fr.steps.filter(s => !s.ai_used).length;
+                const aiCount = fr.steps.filter(s => s.ai_used).length;
+
+                return (
+                  <div
+                    key={fi}
             style={{
               background: t.card,
               border: `1px solid ${t.cardBorder}`,
@@ -765,6 +852,10 @@ function FlowsTab({ flows, t }: { flows: FlowResult[]; t: Theme }) {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        );
+      })}
             </div>
           </div>
         );
