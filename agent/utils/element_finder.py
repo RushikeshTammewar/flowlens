@@ -24,7 +24,39 @@ async def find_element(page: Page, target_description: str) -> ElementHandle | N
 
     Returns the first matching visible element, or None if not found.
     Caller should use AI fallback when None is returned.
+
+    Special handling for:
+    - "first X" -> finds first matching element of type X
+    - "any X" -> finds any visible element of type X
+    - content types: article, product, post, item, link, button
     """
+    desc_lower = target_description.lower()
+
+    # Handle "first X" or "any X" patterns for common content types
+    if "first" in desc_lower or "any" in desc_lower:
+        # Content type selectors
+        content_selectors = {
+            "article": "article, [role='article'], .article, .post",
+            "product": ".product, [data-product], .item, [itemprop='product']",
+            "post": ".post, article, [role='article']",
+            "item": ".item, li, .list-item, [role='listitem']",
+            "result": ".result, .search-result, [role='listitem']",
+            "link": "a[href]",
+            "button": "button, [role='button'], input[type='button'], input[type='submit']",
+            "card": ".card, [role='article'], .item",
+            "category": ".category, [data-category], nav a",
+        }
+
+        for content_type, selector in content_selectors.items():
+            if content_type in desc_lower:
+                try:
+                    elements = await page.query_selector_all(selector)
+                    for el in elements:
+                        if await el.is_visible():
+                            return el
+                except Exception:
+                    pass
+
     keywords = _extract_keywords(target_description)
     if not keywords:
         return None

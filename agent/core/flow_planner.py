@@ -25,51 +25,110 @@ PAGES DISCOVERED:
 NAVIGATION:
 {links}
 
-TASK: Identify 3-8 critical user flows that would catch the most important bugs.
+CRITICAL REQUIREMENT: You MUST identify 5-8 diverse flows. Not just search and login - identify ALL major user journeys.
+
+FLOW CATEGORIES TO CONSIDER:
+1. **Transactional**: Search, add to cart, checkout, login, signup, submit forms
+2. **Navigation**: Browse categories, explore sections, click through menu items
+3. **Content Access**: View articles, read posts, watch videos, download files
+4. **Discovery**: Filter results, sort lists, paginate through items
+5. **Engagement**: Comment, like, share, subscribe, follow
+6. **Account**: Profile view, settings, logout, password reset
 
 PRIORITY GUIDE (use these exact numbers):
 - Revenue-critical (checkout, payment, purchase): Priority 1
-- Core functionality (search, login, signup): Priority 1-2
-- Content access (view article, browse products): Priority 2-3
-- Secondary features (filters, sorting): Priority 3-4
-- Peripheral (footer links, about pages): Priority 4-5
+- Core functionality (search, login, signup, account actions): Priority 1-2
+- Content access (view article, browse products, watch video): Priority 2-3
+- Navigation & Discovery (menu browsing, filters, categories): Priority 2-4
+- Secondary features (sort, paginate, share): Priority 3-4
+- Peripheral (footer links, about pages, help): Priority 4-5
 
 ACTION TYPES:
-- navigate: Go to a specific URL
-- click: Click a button/link (e.g., "click 'Products' nav link")
-- search: Enter text in search box (e.g., "search for 'laptop'")
-- fill_form: Fill and submit a form (e.g., "fill signup form")
-- verify: Check something on the page (e.g., "verify results displayed")
+- navigate: Go to a specific URL or page section
+- click: Click a button/link/menu item
+- search: Enter text in search box
+- fill_form: Fill and submit a form
+- verify: Check something on the page
 
-EXAMPLES:
+COMPREHENSIVE EXAMPLES:
 
-E-commerce site:
-{{"name": "Product Search to Cart", "priority": 1, "steps": [
-  {{"action": "navigate", "target": "homepage", "url_hint": "/", "verify": ""}},
+E-commerce (identify 6+ flows):
+1. {{"name": "Browse Category to Product", "priority": 2, "steps": [
+  {{"action": "click", "target": "products menu", "url_hint": "/products", "verify": "category list displayed"}},
+  {{"action": "click", "target": "electronics category", "url_hint": "/category/electronics", "verify": "products shown"}},
+  {{"action": "click", "target": "first product", "url_hint": "/product/", "verify": "product details loaded"}}
+]}}
+2. {{"name": "Product Search to Details", "priority": 1, "steps": [
   {{"action": "search", "target": "search box", "url_hint": "/search", "verify": "search results displayed"}},
-  {{"action": "click", "target": "first product", "url_hint": "/product/", "verify": "product page loaded"}},
-  {{"action": "click", "target": "add to cart button", "url_hint": "/cart", "verify": "item added to cart"}}
+  {{"action": "click", "target": "first result", "url_hint": "/product/", "verify": "product page loaded"}}
+]}}
+3. {{"name": "Add to Cart", "priority": 1, "steps": [
+  {{"action": "navigate", "target": "product page", "url_hint": "/product/", "verify": ""}},
+  {{"action": "click", "target": "add to cart button", "url_hint": "", "verify": "item added confirmation"}}
+]}}
+4. {{"name": "View Cart", "priority": 2, "steps": [
+  {{"action": "click", "target": "cart icon", "url_hint": "/cart", "verify": "cart page loads with items"}}
+]}}
+5. {{"name": "User Login", "priority": 1, "steps": [
+  {{"action": "click", "target": "login button", "url_hint": "/login", "verify": "login form visible"}},
+  {{"action": "fill_form", "target": "login form", "url_hint": "", "verify": "redirected or logged in"}}
+]}}
+6. {{"name": "Filter Products", "priority": 3, "steps": [
+  {{"action": "navigate", "target": "products page", "url_hint": "/products", "verify": ""}},
+  {{"action": "click", "target": "price filter", "url_hint": "", "verify": "filtered results shown"}}
 ]}}
 
-SaaS/Tool site:
-{{"name": "Sign Up", "priority": 1, "steps": [
+News/Content site (identify 5+ flows):
+1. {{"name": "Browse Homepage Articles", "priority": 2, "steps": [
+  {{"action": "navigate", "target": "homepage", "url_hint": "/", "verify": "articles displayed"}},
+  {{"action": "click", "target": "featured article", "url_hint": "/article/", "verify": "article content loads"}}
+]}}
+2. {{"name": "Navigate Section", "priority": 3, "steps": [
+  {{"action": "click", "target": "technology section", "url_hint": "/tech", "verify": "tech articles shown"}},
+  {{"action": "click", "target": "first article", "url_hint": "/article/", "verify": "article loads"}}
+]}}
+3. {{"name": "Search Articles", "priority": 2, "steps": [
+  {{"action": "search", "target": "search box", "url_hint": "/search", "verify": "search results displayed"}},
+  {{"action": "click", "target": "first result", "url_hint": "/", "verify": "article opens"}}
+]}}
+4. {{"name": "Browse Categories", "priority": 3, "steps": [
+  {{"action": "click", "target": "categories menu", "url_hint": "/categories", "verify": "category list shown"}},
+  {{"action": "click", "target": "first category", "url_hint": "/category/", "verify": "category page loads"}}
+]}}
+5. {{"name": "View Author Profile", "priority": 4, "steps": [
+  {{"action": "navigate", "target": "article page", "url_hint": "/article/", "verify": ""}},
+  {{"action": "click", "target": "author name", "url_hint": "/author/", "verify": "author bio displayed"}}
+]}}
+
+SaaS/Tool site (identify 5+ flows):
+1. {{"name": "Sign Up", "priority": 1, "steps": [
   {{"action": "click", "target": "sign up button", "url_hint": "/signup", "verify": "signup form visible"}},
-  {{"action": "fill_form", "target": "signup form", "url_hint": "/verify", "verify": "confirmation or welcome message"}}
+  {{"action": "fill_form", "target": "signup form", "url_hint": "", "verify": "account created or email sent"}}
 ]}}
-
-News/Content site:
-{{"name": "Search & Read Article", "priority": 2, "steps": [
-  {{"action": "search", "target": "search box", "url_hint": "/search", "verify": "article results shown"}},
-  {{"action": "click", "target": "first article", "url_hint": "/", "verify": "article content loads"}}
+2. {{"name": "Login", "priority": 1, "steps": [
+  {{"action": "click", "target": "login link", "url_hint": "/login", "verify": "login form shown"}},
+  {{"action": "fill_form", "target": "login form", "url_hint": "", "verify": "redirected to dashboard"}}
+]}}
+3. {{"name": "Explore Features", "priority": 3, "steps": [
+  {{"action": "click", "target": "features menu", "url_hint": "/features", "verify": "features list displayed"}},
+  {{"action": "click", "target": "feature details", "url_hint": "/features/", "verify": "feature page loads"}}
+]}}
+4. {{"name": "Pricing Page", "priority": 2, "steps": [
+  {{"action": "click", "target": "pricing link", "url_hint": "/pricing", "verify": "pricing plans shown"}}
+]}}
+5. {{"name": "Documentation Browse", "priority": 3, "steps": [
+  {{"action": "click", "target": "docs link", "url_hint": "/docs", "verify": "documentation index shown"}},
+  {{"action": "click", "target": "getting started", "url_hint": "/docs/", "verify": "guide content loads"}}
 ]}}
 
 RULES:
-- Each flow should test ONE critical user journey end-to-end
-- 2-6 steps per flow (concise but complete)
-- Higher priority = what would hurt the business most if broken
-- If no checkout/login/search is found, focus on navigation flows
-- url_hint can be partial ("/product/", "/cart") or empty if URL doesn't change
-- verify should describe what a human QA would check ("results appear", "button is clickable", "no errors")
+1. MUST identify 5-8 flows minimum (not just 2!)
+2. Include flows from multiple categories: transactional, navigation, content access, discovery
+3. Each flow tests ONE complete user journey (2-6 steps)
+4. Start with high-priority flows (Priority 1-2) but also include navigation flows (Priority 3-4)
+5. Use discovered pages and links to infer what flows are possible
+6. url_hint can be partial ("/product/", "/article/") or empty if URL doesn't change
+7. verify should describe observable outcomes ("results appear", "page loads", "button visible", "content displayed")
 
 OUTPUT: Valid JSON only, no markdown, no code blocks. Format:
 {{"flows": [{{"name": "...", "priority": 1, "steps": [...]}}]}}
@@ -136,14 +195,18 @@ def _parse_flows_response(text: str) -> list[Flow]:
 
 
 def _heuristic_flows(graph: SiteGraph) -> list[Flow]:
-    """Fallback: build flows from graph structure when LLM fails."""
+    """Fallback: build diverse flows from graph structure when LLM fails.
+
+    Generates 5-8 flows based on discovered pages, links, and elements.
+    """
     flows = []
     root = graph.root_url
     parsed = urlparse(root)
     base = f"{parsed.scheme}://{parsed.netloc}"
+    visited_nodes = [n for n in graph.nodes.values() if n.status == "visited"]
 
-    # Search flow if any page has search
-    for node in graph.nodes.values():
+    # 1. Search flow if any page has search
+    for node in visited_nodes:
         if any(e.type == "search" for e in node.elements):
             flows.append(Flow(
                 name="Search",
@@ -155,15 +218,16 @@ def _heuristic_flows(graph: SiteGraph) -> list[Flow]:
             ))
             break
 
-    # Login flow if any page has login form or login-like URL
-    for node in graph.nodes.values():
+    # 2. Login flow if any page has login
+    for node in visited_nodes:
         url_lower = node.url.lower()
-        has_login_url = "login" in url_lower or "signin" in url_lower or "sign-in" in url_lower
-        has_login_form = node.page_type == "login" or any(
-            "login" in (e.text or "").lower() or "sign in" in (e.text or "").lower()
-            for e in node.elements if getattr(e, "type", "") == "form"
-        )
-        if has_login_url or has_login_form:
+        has_login = "login" in url_lower or "signin" in url_lower or "sign-in" in url_lower
+        if not has_login:
+            has_login = node.page_type == "login" or any(
+                "login" in (e.text or "").lower() or "sign in" in (e.text or "").lower()
+                for e in node.elements if getattr(e, "type", "") == "form"
+            )
+        if has_login:
             flows.append(Flow(
                 name="Login",
                 priority=2,
@@ -174,18 +238,93 @@ def _heuristic_flows(graph: SiteGraph) -> list[Flow]:
             ))
             break
 
-    # Browse flow: home -> first few links
-    if not flows:
+    # 3. Homepage Browse - always add this
+    flows.append(Flow(
+        name="Browse Homepage",
+        priority=2,
+        steps=[
+            FlowStep("navigate", "homepage", "/", ""),
+            FlowStep("verify", "content loaded", "", "page content displayed"),
+        ],
+    ))
+
+    # 4. Navigation flows - for each discovered page type
+    for node in visited_nodes[:3]:  # Top 3 pages
+        if node.url == root:
+            continue  # Skip homepage (already covered)
+
+        page_name = node.title or node.url.split('/')[-1] or "page"
+        # Clean up page name
+        page_name = page_name[:30].strip()
+
         flows.append(Flow(
-            name="Browse",
+            name=f"Navigate to {page_name}",
             priority=3,
             steps=[
                 FlowStep("navigate", "homepage", "/", ""),
-                FlowStep("click", "first nav link", "", "page loads"),
+                FlowStep("click", f"link to {page_name}", node.url, "page loads"),
             ],
         ))
 
-    return flows
+    # 5. Click first link/article/item flows
+    content_types = set()
+    for node in visited_nodes:
+        for elem in node.elements:
+            elem_type = getattr(elem, "type", "")
+            if elem_type in ("nav", "link"):
+                content_types.add("link")
+            if node.page_type in ("content", "article"):
+                content_types.add("article")
+
+    if "article" in content_types or "link" in content_types:
+        flows.append(Flow(
+            name="Click First Content Item",
+            priority=3,
+            steps=[
+                FlowStep("navigate", "homepage", "/", ""),
+                FlowStep("click", "first article", "", "content loads"),
+            ],
+        ))
+
+    # 6. Form submission flow if forms found (other than login)
+    for node in visited_nodes:
+        has_form = any(e.type == "form" for e in node.elements)
+        is_login = "login" in node.url.lower() or node.page_type == "login"
+        if has_form and not is_login:
+            flows.append(Flow(
+                name="Submit Form",
+                priority=3,
+                steps=[
+                    FlowStep("navigate", "form page", node.url, ""),
+                    FlowStep("fill_form", "form", "", "form submitted"),
+                ],
+            ))
+            break
+
+    # 7. Deep navigation flow - homepage -> page1 -> page2
+    if len(visited_nodes) >= 3:
+        flows.append(Flow(
+            name="Multi-Level Navigation",
+            priority=4,
+            steps=[
+                FlowStep("navigate", "homepage", "/", ""),
+                FlowStep("click", "first link", "", "page loads"),
+                FlowStep("click", "any link", "", "deeper page loads"),
+            ],
+        ))
+
+    # Ensure we return at least 5 flows
+    while len(flows) < 5:
+        flows.append(Flow(
+            name=f"Browse Flow {len(flows) + 1}",
+            priority=4,
+            steps=[
+                FlowStep("navigate", "homepage", "/", ""),
+                FlowStep("click", "any visible link", "", "page loads"),
+            ],
+        ))
+
+    return flows[:8]  # Cap at 8 flows
 
 
 async def identify_flows(graph: SiteGraph) -> list[Flow]:
