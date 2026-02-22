@@ -203,17 +203,12 @@ export default function Home() {
         .btn-cta:hover:not(:disabled) {
           background: #174f27;
         }
-        .scan-card {
-          background: #f5f5f4;
-          border: 2px solid var(--light);
-          border-radius: 8px;
-          padding: 32px 28px;
-          transition: border-color 0.2s, box-shadow 0.2s;
-          box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+        .scan-bar:focus-within {
+          border-color: var(--black) !important;
+          box-shadow: 0 4px 24px rgba(0,0,0,0.12) !important;
         }
-        .scan-card:focus-within {
-          border-color: var(--black);
-          box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        .scan-bar:hover {
+          border-color: #ccc;
         }
         .step-card {
           background: var(--white);
@@ -279,11 +274,15 @@ export default function Home() {
           .briefing-meta {
             display: none !important;
           }
-          .scan-card {
-            padding: 20px 16px !important;
+          .scan-bar {
+            padding: 4px 4px 4px 14px !important;
           }
-          .scan-card p {
-            font-size: 12px !important;
+          .scan-bar input {
+            font-size: 15px !important;
+          }
+          .scan-bar button {
+            padding: 10px 16px !important;
+            font-size: 11px !important;
           }
           .section-padding {
             padding: 48px 0 !important;
@@ -420,14 +419,30 @@ export default function Home() {
                 </div>
               ) : (
                 <div>
-                  <div className="scan-card">
-                    <p style={{ fontSize: 13, color: "var(--gray)", marginBottom: 16 }}>
-                      Enter your website URL and we&apos;ll scan it for bugs, performance issues, and accessibility problems across desktop and mobile.
-                    </p>
-                    <div style={{ position: "relative" }}>
+                  <div style={{ position: "relative" }}>
+                    {/* Spotlight bar */}
+                    <div
+                      className="scan-bar"
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        background: "#fff",
+                        border: "1px solid #e0e0e0",
+                        borderRadius: 40,
+                        padding: "6px 6px 6px 20px",
+                        boxShadow: "0 2px 16px rgba(0,0,0,0.06)",
+                        transition: "border-color 0.2s, box-shadow 0.2s",
+                      }}
+                    >
+                      {/* Search icon */}
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#aaa" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginRight: 12 }}>
+                        <circle cx="11" cy="11" r="7" />
+                        <line x1="16.5" y1="16.5" x2="21" y2="21" />
+                      </svg>
+
                       <input
                         type="url"
-                        placeholder="https://yoursite.com"
+                        placeholder="google.com"
                         value={url}
                         onChange={(e) => handleInputChange(e.target.value)}
                         onKeyDown={handleKeyDown}
@@ -436,129 +451,148 @@ export default function Home() {
                         disabled={scanState === "loading"}
                         autoComplete="off"
                         style={{
-                          width: "100%",
-                          padding: "14px 0",
+                          flex: 1,
+                          minWidth: 0,
+                          padding: "12px 0",
                           border: "none",
-                          borderBottom: "2px solid var(--black)",
                           background: "transparent",
                           fontFamily: "'IBM Plex Mono', monospace",
-                          fontSize: 16,
+                          fontSize: 17,
                           outline: "none",
                           color: "var(--black)",
                         }}
                       />
 
-                      {showSuggestions && suggestions.length > 0 && (
-                        <div
-                          ref={dropdownRef}
-                          style={{
-                            position: "absolute",
-                            top: "100%",
-                            left: 0,
-                            right: 0,
-                            background: "#fff",
-                            border: "1px solid var(--light)",
-                            borderTop: "none",
-                            borderRadius: "0 0 8px 8px",
-                            boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
-                            zIndex: 50,
-                            maxHeight: 280,
-                            overflowY: "auto",
-                          }}
-                        >
-                          {suggestions.some(s => s.source === "history") && (
-                            <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--gray)", padding: "8px 16px 4px", margin: 0 }}>
-                              Previously scanned
-                            </p>
-                          )}
-                          {suggestions.filter(s => s.source === "history").map((s, i) => {
-                            const idx = suggestions.indexOf(s);
-                            return (
-                              <div
-                                key={`h-${s.domain}`}
-                                onMouseDown={() => { if (blurRef.current) clearTimeout(blurRef.current); selectSuggestion(s); }}
-                                onMouseEnter={() => setHighlightIdx(idx)}
-                                style={{
-                                  padding: "10px 16px",
-                                  cursor: "pointer",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 10,
-                                  background: highlightIdx === idx ? "#f5f5f4" : "transparent",
-                                  transition: "background 0.1s",
-                                }}
-                              >
-                                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#28c840", flexShrink: 0 }} />
-                                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--black)" }}>{s.domain}</span>
-                              </div>
-                            );
-                          })}
+                      <button
+                        onClick={handleScan}
+                        disabled={scanState === "loading" || !url.trim()}
+                        style={{
+                          flexShrink: 0,
+                          padding: "12px 28px",
+                          background: scanState === "loading" ? "#ccc" : "#1a5c2e",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: 32,
+                          fontFamily: "'IBM Plex Mono', monospace",
+                          fontSize: 12,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.1em",
+                          cursor: scanState === "loading" || !url.trim() ? "not-allowed" : "pointer",
+                          transition: "background 0.2s",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        {scanState === "loading" ? (
+                          <>
+                            <span style={{
+                              width: 14, height: 14,
+                              border: "2px solid rgba(255,255,255,0.3)",
+                              borderTopColor: "#fff",
+                              borderRadius: "50%",
+                              display: "inline-block",
+                              animation: "spin 1s linear infinite",
+                            }} />
+                            Scanning
+                          </>
+                        ) : (
+                          "Scan →"
+                        )}
+                      </button>
+                    </div>
 
-                          {suggestions.some(s => s.source === "clearbit") && (
-                            <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--gray)", padding: "8px 16px 4px", margin: 0, borderTop: suggestions.some(s => s.source === "history") ? "1px solid var(--light)" : "none" }}>
-                              Suggestions
-                            </p>
-                          )}
-                          {suggestions.filter(s => s.source === "clearbit").map((s) => {
-                            const idx = suggestions.indexOf(s);
-                            return (
-                              <div
-                                key={`c-${s.domain}`}
-                                onMouseDown={() => { if (blurRef.current) clearTimeout(blurRef.current); selectSuggestion(s); }}
-                                onMouseEnter={() => setHighlightIdx(idx)}
-                                style={{
-                                  padding: "10px 16px",
-                                  cursor: "pointer",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "space-between",
-                                  background: highlightIdx === idx ? "#f5f5f4" : "transparent",
-                                  transition: "background 0.1s",
-                                }}
-                              >
-                                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--black)" }}>{s.domain}</span>
-                                <span style={{ fontSize: 11, color: "var(--gray)" }}>{s.name}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
-                      <p style={{ fontSize: 11, color: "var(--gray)" }}>
-                        No signup required
-                      </p>
-                      <p style={{ fontSize: 11, color: "var(--gray)" }}>
-                        Results in &lt; 5 min
-                      </p>
-                    </div>
+                    {/* Autocomplete dropdown */}
+                    {showSuggestions && suggestions.length > 0 && (
+                      <div
+                        ref={dropdownRef}
+                        style={{
+                          position: "absolute",
+                          top: "calc(100% - 4px)",
+                          left: 8,
+                          right: 8,
+                          background: "#fff",
+                          border: "1px solid #e8e8e8",
+                          borderTop: "1px solid #f0f0f0",
+                          borderRadius: "0 0 20px 20px",
+                          boxShadow: "0 12px 32px rgba(0,0,0,0.1)",
+                          zIndex: 50,
+                          maxHeight: 280,
+                          overflowY: "auto",
+                          padding: "4px 0",
+                        }}
+                      >
+                        {suggestions.some(s => s.source === "history") && (
+                          <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--gray)", padding: "8px 20px 4px", margin: 0 }}>
+                            Previously scanned
+                          </p>
+                        )}
+                        {suggestions.filter(s => s.source === "history").map((s) => {
+                          const idx = suggestions.indexOf(s);
+                          return (
+                            <div
+                              key={`h-${s.domain}`}
+                              onMouseDown={() => { if (blurRef.current) clearTimeout(blurRef.current); selectSuggestion(s); }}
+                              onMouseEnter={() => setHighlightIdx(idx)}
+                              style={{
+                                padding: "10px 20px",
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 10,
+                                background: highlightIdx === idx ? "#f5f5f4" : "transparent",
+                                transition: "background 0.1s",
+                                borderRadius: 8,
+                                margin: "0 6px",
+                              }}
+                            >
+                              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#28c840", flexShrink: 0 }} />
+                              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--black)" }}>{s.domain}</span>
+                            </div>
+                          );
+                        })}
+
+                        {suggestions.some(s => s.source === "clearbit") && (
+                          <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--gray)", padding: "8px 20px 4px", margin: 0, borderTop: suggestions.some(s => s.source === "history") ? "1px solid #f0f0f0" : "none" }}>
+                            Suggestions
+                          </p>
+                        )}
+                        {suggestions.filter(s => s.source === "clearbit").map((s) => {
+                          const idx = suggestions.indexOf(s);
+                          return (
+                            <div
+                              key={`c-${s.domain}`}
+                              onMouseDown={() => { if (blurRef.current) clearTimeout(blurRef.current); selectSuggestion(s); }}
+                              onMouseEnter={() => setHighlightIdx(idx)}
+                              style={{
+                                padding: "10px 20px",
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                background: highlightIdx === idx ? "#f5f5f4" : "transparent",
+                                transition: "background 0.1s",
+                                borderRadius: 8,
+                                margin: "0 6px",
+                              }}
+                            >
+                              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--black)" }}>{s.domain}</span>
+                              <span style={{ fontSize: 11, color: "var(--gray)" }}>{s.name}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
-                  <button
-                    className="btn btn-cta"
-                    onClick={handleScan}
-                    disabled={scanState === "loading" || !url.trim()}
-                    style={{ width: "100%", marginTop: 12, padding: "16px 28px" }}
-                  >
-                    {scanState === "loading" ? (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                        <span
-                          style={{
-                            width: 14,
-                            height: 14,
-                            border: "2px solid var(--gray)",
-                            borderTopColor: "var(--white)",
-                            borderRadius: "50%",
-                            display: "inline-block",
-                            animation: "spin 1s linear infinite",
-                          }}
-                        />
-                        Scanning...
-                      </span>
-                    ) : (
-                      "Scan Free →"
-                    )}
-                  </button>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, padding: "0 20px" }}>
+                    <p style={{ fontSize: 11, color: "var(--gray)" }}>
+                      No signup required
+                    </p>
+                    <p style={{ fontSize: 11, color: "var(--gray)" }}>
+                      Results in &lt; 5 min
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
