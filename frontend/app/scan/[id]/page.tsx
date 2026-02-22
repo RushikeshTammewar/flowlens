@@ -90,32 +90,72 @@ interface LogEntry {
 /* ─── Theme ─── */
 
 interface Theme {
-  name: "dark" | "light";
+  key: string;
+  label: string;
+  isDark: boolean;
   bg: string;
   bgAlt: string;
   card: string;
   cardBorder: string;
+  cardShadow: string;
   text: string;
   textSecondary: string;
   textMuted: string;
   border: string;
   borderSubtle: string;
   accent: string;
+  radius: number;
+  codeBg: string;
+  hoverBg: string;
 }
 
 const DARK: Theme = {
-  name: "dark", bg: "#0a0a0a", bgAlt: "#0f0f0f", card: "#141414",
-  cardBorder: "#1e1e1e", text: "#f0f0f0", textSecondary: "#a0a0a0",
-  textMuted: "#555", border: "#2a2a2a", borderSubtle: "#1a1a1a",
-  accent: "#1a5c2e",
+  key: "dark", label: "Dark", isDark: true,
+  bg: "#0a0a0a", bgAlt: "#0f0f0f", card: "#141414",
+  cardBorder: "#1e1e1e", cardShadow: "none",
+  text: "#f0f0f0", textSecondary: "#a0a0a0", textMuted: "#555",
+  border: "#2a2a2a", borderSubtle: "#1a1a1a", accent: "#1a5c2e",
+  radius: 10, codeBg: "#0f0f0f", hoverBg: "rgba(255,255,255,0.02)",
 };
 
-const LIGHT: Theme = {
-  name: "light", bg: "#fafafa", bgAlt: "#fff", card: "#fff",
-  cardBorder: "#e5e5e5", text: "#111", textSecondary: "#666",
-  textMuted: "#aaa", border: "#e0e0e0", borderSubtle: "#f0f0f0",
-  accent: "#1a5c2e",
+const LINEAR: Theme = {
+  key: "linear", label: "Linear", isDark: false,
+  bg: "#fff", bgAlt: "#fff", card: "#fff",
+  cardBorder: "#e8e8e8", cardShadow: "none",
+  text: "#1a1a1a", textSecondary: "#6b6b6b", textMuted: "#b0b0b0",
+  border: "#e8e8e8", borderSubtle: "#f3f3f3", accent: "#5e6ad2",
+  radius: 8, codeBg: "#f7f7f7", hoverBg: "#f9f9f9",
 };
+
+const NOTION: Theme = {
+  key: "notion", label: "Notion", isDark: false,
+  bg: "#fffcf7", bgAlt: "#fffcf7", card: "#fff",
+  cardBorder: "transparent", cardShadow: "0 1px 4px rgba(0,0,0,0.06)",
+  text: "#37352f", textSecondary: "#787774", textMuted: "#c3c2bf",
+  border: "#e8e5df", borderSubtle: "#f1eeea", accent: "#d9730d",
+  radius: 14, codeBg: "#f7f6f3", hoverBg: "rgba(55,53,47,0.03)",
+};
+
+const VERCEL: Theme = {
+  key: "vercel", label: "Vercel", isDark: false,
+  bg: "#fafafa", bgAlt: "#fff", card: "#fff",
+  cardBorder: "#eaeaea", cardShadow: "0 2px 8px rgba(0,0,0,0.04)",
+  text: "#000", textSecondary: "#666", textMuted: "#999",
+  border: "#eaeaea", borderSubtle: "#f5f5f5", accent: "#000",
+  radius: 8, codeBg: "#f5f5f5", hoverBg: "#fafafa",
+};
+
+const GITHUB: Theme = {
+  key: "github", label: "GitHub", isDark: false,
+  bg: "#f6f8fa", bgAlt: "#fff", card: "#fff",
+  cardBorder: "#d1d9e0", cardShadow: "0 1px 0 rgba(27,31,36,0.04)",
+  text: "#1f2328", textSecondary: "#656d76", textMuted: "#8b949e",
+  border: "#d1d9e0", borderSubtle: "#eef1f4", accent: "#1f6feb",
+  radius: 6, codeBg: "#f6f8fa", hoverBg: "rgba(208,215,222,0.12)",
+};
+
+const THEMES = [DARK, LINEAR, NOTION, VERCEL, GITHUB];
+const THEME_MAP: Record<string, Theme> = Object.fromEntries(THEMES.map(t => [t.key, t]));
 
 const SEV_COLORS: Record<string, string> = { P0: "#ef4444", P1: "#ef4444", P2: "#f59e0b", P3: "#888", P4: "#555" };
 const SEV_BG: Record<string, string> = { P0: "rgba(239,68,68,0.1)", P1: "rgba(239,68,68,0.08)", P2: "rgba(245,158,11,0.08)", P3: "rgba(136,136,136,0.06)", P4: "rgba(85,85,85,0.04)" };
@@ -132,7 +172,7 @@ export default function ScanResultPage() {
   const [polling, setPolling] = useState(true);
   const [expandedBug, setExpandedBug] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"bugs" | "flowmap" | "performance" | "pages">("bugs");
-  const [theme, setTheme] = useState<Theme>(searchParams.get("theme") === "light" ? LIGHT : DARK);
+  const [theme, setTheme] = useState<Theme>(THEME_MAP[searchParams.get("theme") || ""] || DARK);
 
   const [liveNodes, setLiveNodes] = useState<Map<string, LiveNode>>(new Map());
   const [liveEdges, setLiveEdges] = useState<Array<{ from: string; to: string }>>([]);
@@ -220,10 +260,10 @@ export default function ScanResultPage() {
           <a href="/" style={{ fontFamily: "'Instrument Serif', serif", fontSize: 24, color: t.text, textDecoration: "none" }}>FlowLens</a>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <button
-              onClick={() => setTheme(t.name === "dark" ? LIGHT : DARK)}
+              onClick={() => { const idx = THEMES.findIndex(th => th.key === t.key); setTheme(THEMES[(idx + 1) % THEMES.length]); }}
               style={{ background: "none", border: `1px solid ${t.border}`, borderRadius: 6, padding: "6px 12px", fontSize: 11, color: t.textSecondary, cursor: "pointer", fontFamily: "inherit" }}
             >
-              {t.name === "dark" ? "Light" : "Dark"}
+              {t.label} ↻
             </button>
             <a href="/" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: t.textSecondary, textDecoration: "none" }}>← New Scan</a>
           </div>
@@ -280,7 +320,7 @@ function LiveScanView({ url, nodes, edges, log, counters, t }: {
         </div>
       </div>
 
-      <div className="scan-counters" style={{ display: "flex", flexWrap: "wrap", gap: 1, marginBottom: 32, background: t.border, borderRadius: 10, overflow: "hidden" }}>
+      <div className="scan-counters" style={{ display: "flex", flexWrap: "wrap", gap: 1, marginBottom: 32, background: t.border, borderRadius: t.radius, overflow: "hidden" }}>
         {([
           { label: "Explored", value: counters.pages, color: t.text },
           { label: "Elements", value: counters.elements, color: t.textSecondary },
@@ -296,13 +336,13 @@ function LiveScanView({ url, nodes, edges, log, counters, t }: {
       </div>
 
       <div className="scan-graph-log" style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 24, alignItems: "start" }}>
-        <div style={{ background: t.card, borderRadius: 10, border: `1px solid ${t.cardBorder}`, padding: 24, minHeight: 300 }}>
+        <div style={{ background: t.card, borderRadius: t.radius, border: `1px solid ${t.cardBorder}`, boxShadow: t.cardShadow, padding: 24, minHeight: 300 }}>
           <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", color: t.textMuted, marginBottom: 16 }}>
             Site Graph · {counters.pages} explored · {nodeArray.length} found
           </p>
           <LiveGraph nodes={nodeArray} t={t} />
         </div>
-        <div style={{ background: t.card, borderRadius: 10, border: `1px solid ${t.cardBorder}`, display: "flex", flexDirection: "column", maxHeight: 500 }}>
+        <div style={{ background: t.card, borderRadius: t.radius, border: `1px solid ${t.cardBorder}`, boxShadow: t.cardShadow, display: "flex", flexDirection: "column", maxHeight: 500 }}>
           <div style={{ padding: "12px 16px", borderBottom: `1px solid ${t.cardBorder}` }}>
             <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", color: t.textMuted }}>Activity Log</p>
           </div>
@@ -374,7 +414,7 @@ function CompletedView({ data, activeTab, setActiveTab, expandedBug, setExpanded
         {/* Stat cards */}
         <div className="stat-cards" style={{ display: "flex", gap: 12, marginBottom: 24 }}>
           {/* Health ring card */}
-          <div className="stat-card" style={{ flex: 1, background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 12, padding: "24px 20px", textAlign: "center" }}>
+          <div className="stat-card" style={{ flex: 1, background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: t.radius, boxShadow: t.cardShadow, padding: "24px 20px", textAlign: "center" }}>
             <div className="health-ring" style={{
               width: 96, height: 96, borderRadius: "50%", margin: "0 auto 12px",
               background: `conic-gradient(${sColor} ${score * 3.6}deg, ${t.borderSubtle} ${score * 3.6}deg)`,
@@ -392,7 +432,7 @@ function CompletedView({ data, activeTab, setActiveTab, expandedBug, setExpanded
             { value: data.bugs.length, label: "Bugs", sub: "found", color: data.bugs.length > 0 ? "#ef4444" : "#28c840" },
             { value: data.duration_seconds ? `${Math.round(data.duration_seconds)}s` : "—", label: "Duration", sub: "" },
           ]).map(s => (
-            <div key={s.label} className="stat-card" style={{ flex: 1, background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 12, padding: "24px 20px", textAlign: "center", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div key={s.label} className="stat-card" style={{ flex: 1, background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: t.radius, boxShadow: t.cardShadow, padding: "24px 20px", textAlign: "center", display: "flex", flexDirection: "column", justifyContent: "center" }}>
               <p className="stat-value" style={{ fontFamily: "'Instrument Serif', serif", fontSize: 36, color: s.color || t.text, lineHeight: 1, marginBottom: 6 }}>{s.value}</p>
               <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: t.textMuted }}>{s.label}</p>
               {s.sub && <p style={{ fontSize: 10, color: t.textMuted, marginTop: 2 }}>{s.sub}</p>}
@@ -408,7 +448,7 @@ function CompletedView({ data, activeTab, setActiveTab, expandedBug, setExpanded
                 {count} {sev}
               </span>
             ))}
-            <span style={{ padding: "4px 12px", background: t.name === "dark" ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.03)", color: t.textMuted, fontSize: 11, borderRadius: 6, marginLeft: 4 }}>
+            <span style={{ padding: "4px 12px", background: t.hoverBg, color: t.textMuted, fontSize: 11, borderRadius: 6, marginLeft: 4 }}>
               {Object.entries(data.bug_summary.by_category || {}).map(([cat, count]) => `${count} ${cat}`).join(" · ")}
             </span>
           </div>
@@ -488,7 +528,7 @@ function BugsTab({ bugs, expandedBug, setExpandedBug, t }: {
         return (
           <div key={cat} style={{
             background: t.card, border: `1px solid ${hasP0P1 ? "rgba(239,68,68,0.2)" : t.cardBorder}`,
-            borderRadius: 12, overflow: "hidden",
+            borderRadius: t.radius, boxShadow: t.cardShadow, overflow: "hidden",
           }}>
             {/* Group header */}
             <div style={{
@@ -499,7 +539,7 @@ function BugsTab({ bugs, expandedBug, setExpandedBug, t }: {
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 16 }}>{CAT_ICONS[cat] || "●"}</span>
                 <span style={{ fontSize: 13, fontWeight: 600, color: t.text, textTransform: "capitalize" }}>{CAT_LABELS[cat] || cat}</span>
-                <span style={{ fontSize: 11, color: t.textMuted, padding: "2px 8px", background: t.name === "dark" ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", borderRadius: 4 }}>
+                <span style={{ fontSize: 11, color: t.textMuted, padding: "2px 8px", background: t.hoverBg, borderRadius: 4 }}>
                   {catBugs.length}
                 </span>
               </div>
@@ -539,7 +579,7 @@ function BugsTab({ bugs, expandedBug, setExpandedBug, t }: {
                     </div>
 
                     {isExpanded && (
-                      <div className="scan-bug-detail" style={{ padding: "16px 20px 20px 60px", borderBottom: `1px solid ${t.borderSubtle}`, background: t.name === "dark" ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.01)" }}>
+                      <div className="scan-bug-detail" style={{ padding: "16px 20px 20px 60px", borderBottom: `1px solid ${t.borderSubtle}`, background: t.hoverBg }}>
                         <p style={{ color: t.textSecondary, lineHeight: 1.7, marginBottom: 16, maxWidth: 700, fontSize: 12 }}>{bug.description}</p>
                         <div style={{ marginBottom: 12 }}>
                           <span style={{ color: t.textMuted, fontSize: 10, textTransform: "uppercase" }}>Page: </span>
@@ -548,7 +588,7 @@ function BugsTab({ bugs, expandedBug, setExpandedBug, t }: {
                         {bug.repro_steps && bug.repro_steps.length > 0 && (
                           <div style={{ marginBottom: 16 }}>
                             <p style={{ color: t.textMuted, fontSize: 10, textTransform: "uppercase", marginBottom: 8 }}>Reproduction Steps</p>
-                            <div style={{ background: t.name === "dark" ? "#0f0f0f" : "#f5f5f5", borderRadius: 8, padding: "12px 16px" }}>
+                            <div style={{ background: t.codeBg, borderRadius: t.radius, padding: "12px 16px" }}>
                               {bug.repro_steps.map((step, si) => (
                                 <div key={si} style={{ display: "flex", gap: 10, padding: "3px 0", color: t.textSecondary, fontSize: 12 }}>
                                   <span style={{ color: t.textMuted, flexShrink: 0 }}>{si + 1}.</span>
@@ -568,7 +608,7 @@ function BugsTab({ bugs, expandedBug, setExpandedBug, t }: {
                         {Object.keys(bug.evidence).filter(k => !["repro_steps", "screenshot_key", "page_title"].includes(k)).length > 0 && (
                           <div>
                             <p style={{ color: t.textMuted, fontSize: 10, textTransform: "uppercase", marginBottom: 8 }}>Evidence</p>
-                            <div style={{ background: t.name === "dark" ? "#0f0f0f" : "#f5f5f5", borderRadius: 8, padding: "10px 14px", fontSize: 11 }}>
+                            <div style={{ background: t.codeBg, borderRadius: t.radius, padding: "10px 14px", fontSize: 11 }}>
                               {Object.entries(bug.evidence).filter(([k]) => !["repro_steps", "screenshot_key", "page_title"].includes(k)).map(([key, val]) => (
                                 <div key={key} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: `1px solid ${t.borderSubtle}` }}>
                                   <span style={{ color: t.textMuted }}>{key}</span>
@@ -611,9 +651,9 @@ function FlowMapView({ graph, bugs, t }: { graph?: SiteGraph; bugs: Bug[]; t: Th
   if (!graph || !graph.nodes || graph.nodes.length === 0) return <div style={{ padding: "60px 0", textAlign: "center", color: t.textMuted }}>No flow map data available.</div>;
 
   const nodeColors = (node: GraphNode) => {
-    if (node.bugs === 0) return { bg: t.name === "dark" ? "#0d2818" : "#f0fdf4", border: t.name === "dark" ? "#1a5c2e" : "#86efac", dot: "#28c840" };
-    if (node.max_severity === "P0" || node.max_severity === "P1") return { bg: t.name === "dark" ? "#2a1215" : "#fef2f2", border: t.name === "dark" ? "#7f1d1d" : "#fca5a5", dot: "#ef4444" };
-    if (node.max_severity === "P2") return { bg: t.name === "dark" ? "#2a2010" : "#fffbeb", border: t.name === "dark" ? "#78350f" : "#fcd34d", dot: "#f59e0b" };
+    if (node.bugs === 0) return { bg: t.isDark ? "#0d2818" : "#f0fdf4", border: t.isDark ? "#1a5c2e" : "#86efac", dot: "#28c840" };
+    if (node.max_severity === "P0" || node.max_severity === "P1") return { bg: t.isDark ? "#2a1215" : "#fef2f2", border: t.isDark ? "#7f1d1d" : "#fca5a5", dot: "#ef4444" };
+    if (node.max_severity === "P2") return { bg: t.isDark ? "#2a2010" : "#fffbeb", border: t.isDark ? "#78350f" : "#fcd34d", dot: "#f59e0b" };
     return { bg: t.card, border: t.cardBorder, dot: t.textMuted };
   };
 
@@ -628,7 +668,7 @@ function FlowMapView({ graph, bugs, t }: { graph?: SiteGraph; bugs: Bug[]; t: Th
       </p>
       {rootNode && (
         <div style={{ textAlign: "center", marginBottom: 24 }}>
-          <div style={{ display: "inline-block", padding: "14px 28px", borderRadius: 10, maxWidth: 280, background: nodeColors(rootNode).bg, border: `2px solid ${nodeColors(rootNode).border}` }}>
+          <div style={{ display: "inline-block", padding: "14px 28px", borderRadius: t.radius, maxWidth: 280, background: nodeColors(rootNode).bg, border: `2px solid ${nodeColors(rootNode).border}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
               <span style={{ width: 8, height: 8, borderRadius: "50%", background: nodeColors(rootNode).dot }} />
               <span style={{ color: t.text, fontSize: 14, fontWeight: 500 }}>{nodeLabel(rootNode)}</span>
@@ -643,7 +683,7 @@ function FlowMapView({ graph, bugs, t }: { graph?: SiteGraph; bugs: Bug[]; t: Th
           {childNodes.map(node => {
             const colors = nodeColors(node);
             return (
-              <div key={node.id} style={{ padding: "12px 14px", borderRadius: 10, background: colors.bg, border: `1px solid ${colors.border}`, overflow: "hidden", minWidth: 0 }} title={node.id}>
+              <div key={node.id} style={{ padding: "12px 14px", borderRadius: t.radius, background: colors.bg, border: `1px solid ${colors.border}`, overflow: "hidden", minWidth: 0 }} title={node.id}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ width: 6, height: 6, borderRadius: "50%", background: colors.dot, flexShrink: 0 }} />
                   <span style={{ color: t.text, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{nodeLabel(node)}</span>
@@ -678,7 +718,7 @@ function PerformanceTab({ metrics, t }: { metrics: Metric[]; t: Theme }) {
         const loadColor = metricColor(m.load_time_ms, 3000, 5000);
         const barWidth = `${Math.min((m.load_time_ms / maxLoad) * 100, 100)}%`;
         return (
-          <div key={i} style={{ background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 12, padding: 20, position: "relative", overflow: "hidden" }}>
+          <div key={i} style={{ background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: t.radius, boxShadow: t.cardShadow, padding: 20, position: "relative", overflow: "hidden" }}>
             <div style={{ position: "absolute", bottom: 0, left: 0, width: barWidth, height: 3, background: loadColor, opacity: 0.5, borderRadius: "0 3px 0 0" }} />
             <p style={{ color: t.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {shortUrl(m.url)} · {m.viewport}
@@ -729,7 +769,7 @@ function PagesTab({ pages, bugs, graph, t }: { pages: string[]; bugs: Bug[]; gra
         return (
           <div key={i} style={{
             padding: "12px 16px", borderRadius: 8, display: "flex", alignItems: "center", gap: 12,
-            background: i % 2 === 0 ? "transparent" : (t.name === "dark" ? "rgba(255,255,255,0.015)" : "rgba(0,0,0,0.015)"),
+            background: i % 2 === 0 ? "transparent" : t.hoverBg,
           }}>
             <span style={{ color: bugCount > 0 ? "#ef4444" : "#28c840", flexShrink: 0, fontSize: 14 }}>{bugCount > 0 ? "●" : "✓"}</span>
             <div style={{ flex: 1, minWidth: 0 }}>
