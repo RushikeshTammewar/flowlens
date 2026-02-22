@@ -356,7 +356,7 @@ function LiveScanView({
       {/* Counters */}
       <div className="scan-counters" style={{ display: "flex", flexWrap: "wrap", gap: 1, marginBottom: 32, background: "#2a2a2a", borderRadius: 8, overflow: "hidden" }}>
         {([
-          { label: "Pages", value: counters.pages, color: "#fff" },
+          { label: "Explored", value: counters.pages, color: "#fff" },
           { label: "Elements", value: counters.elements, color: "#888" },
           { label: "Actions", value: counters.actions, color: "#888" },
           { label: "Bugs", value: counters.bugs, color: counters.bugs > 0 ? "#ff5f57" : "#28c840" },
@@ -381,7 +381,7 @@ function LiveScanView({
         {/* Live graph */}
         <div style={{ background: "#141414", borderRadius: 8, border: "1px solid #2a2a2a", padding: 24, minHeight: 300 }}>
           <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", color: "#555", marginBottom: 16 }}>
-            Site Graph · {nodeArray.length} pages discovered
+            Site Graph · {counters.pages} explored · {nodeArray.length} found
           </p>
           <LiveGraph nodes={nodeArray} edges={edges} />
         </div>
