@@ -179,6 +179,7 @@ async def get_scan(scan_id: str):
             "site_graph": scan.get("site_graph", {}),
             "screenshots": {k: v for k, v in list(screenshots.items())[:20]},
             "errors": result.errors,
+            "flows": [r.to_dict() for r in result.flows] if getattr(result, "flows", None) else [],
         }
 
     return {

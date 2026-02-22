@@ -52,6 +52,29 @@ interface GraphNode {
 interface GraphEdge { from: string; to: string; }
 interface SiteGraph { nodes: GraphNode[]; edges: GraphEdge[]; }
 
+interface FlowStepDef {
+  action: string;
+  target: string;
+  url_hint: string;
+  verify: string;
+}
+
+interface FlowStepResult {
+  step: FlowStepDef;
+  status: "passed" | "failed" | "skipped";
+  actual_url: string;
+  screenshot_b64?: string;
+  error?: string;
+  ai_used: boolean;
+}
+
+interface FlowResult {
+  flow: { name: string; priority: number; steps: FlowStepDef[] };
+  status: "passed" | "failed" | "partial";
+  steps: FlowStepResult[];
+  duration_ms: number;
+}
+
 interface ScanResult {
   scan_id: string;
   status: string;
@@ -68,6 +91,7 @@ interface ScanResult {
   site_graph?: SiteGraph;
   screenshots?: Record<string, string>;
   errors: string[];
+  flows?: FlowResult[];
 }
 
 interface LiveNode {
@@ -133,7 +157,7 @@ export default function ScanResultPage() {
   const [data, setData] = useState<ScanResult | null>(null);
   const [polling, setPolling] = useState(true);
   const [expandedBug, setExpandedBug] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"bugs" | "flowmap" | "performance" | "pages">("bugs");
+  const [activeTab, setActiveTab] = useState<"bugs" | "flows" | "flowmap" | "performance" | "pages">("bugs");
   const theme = T;
 
   const [liveNodes, setLiveNodes] = useState<Map<string, LiveNode>>(new Map());
@@ -348,7 +372,7 @@ function LiveGraph({ nodes, t }: { nodes: LiveNode[]; t: Theme }) {
 /* ─── Completed View ─── */
 
 function CompletedView({ data, activeTab, setActiveTab, expandedBug, setExpandedBug, t }: {
-  data: ScanResult; activeTab: string; setActiveTab: (t: "bugs" | "flowmap" | "performance" | "pages") => void;
+  data: ScanResult; activeTab: string; setActiveTab: (t: "bugs" | "flows" | "flowmap" | "performance" | "pages") => void;
   expandedBug: string | null; setExpandedBug: (i: string | null) => void; t: Theme;
 }) {
   const score = data.health_score ?? 0;
@@ -381,17 +405,24 @@ function CompletedView({ data, activeTab, setActiveTab, expandedBug, setExpanded
             <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: sColor, padding: "3px 10px", background: `${sColor}15`, borderRadius: 4 }}>{sLabel}</span>
           </div>
 
-          {([
-            { value: data.pages_tested, label: "Pages", sub: "explored" },
-            { value: data.bugs.length, label: "Bugs", sub: "found", color: data.bugs.length > 0 ? "#ef4444" : "#28c840" },
-            { value: data.duration_seconds ? `${Math.round(data.duration_seconds)}s` : "—", label: "Duration", sub: "" },
-          ]).map(s => (
-            <div key={s.label} className="stat-card" style={{ flex: 1, background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: t.radius, boxShadow: t.cardShadow, padding: "24px 20px", textAlign: "center", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-              <p className="stat-value" style={{ fontFamily: "'Instrument Serif', serif", fontSize: 36, color: s.color || t.text, lineHeight: 1, marginBottom: 6 }}>{s.value}</p>
-              <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: t.textMuted }}>{s.label}</p>
-              {s.sub && <p style={{ fontSize: 10, color: t.textMuted, marginTop: 2 }}>{s.sub}</p>}
-            </div>
-          ))}
+          {(() => {
+            const statItems: Array<{ value: string | number; label: string; sub?: string; color?: string }> = [
+              { value: data.pages_tested, label: "Pages", sub: "explored" },
+              { value: data.bugs.length, label: "Bugs", sub: "found", color: data.bugs.length > 0 ? "#ef4444" : "#28c840" },
+            ];
+            if (data.flows && data.flows.length > 0) {
+              const passed = data.flows.filter(f => f.status === "passed").length;
+              statItems.push({ value: `${passed}/${data.flows.length}`, label: "Flows", sub: "passed", color: passed === data.flows.length ? "#28c840" : t.text });
+            }
+            statItems.push({ value: data.duration_seconds ? `${Math.round(data.duration_seconds)}s` : "—", label: "Duration", sub: "" });
+            return statItems.map((s, i) => (
+              <div key={s.label + i} className="stat-card" style={{ flex: 1, background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: t.radius, boxShadow: t.cardShadow, padding: "24px 20px", textAlign: "center", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                <p className="stat-value" style={{ fontFamily: "'Instrument Serif', serif", fontSize: 36, color: s.color || t.text, lineHeight: 1, marginBottom: 6 }}>{s.value}</p>
+                <p style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: t.textMuted }}>{s.label}</p>
+                {s.sub && <p style={{ fontSize: 10, color: t.textMuted, marginTop: 2 }}>{s.sub}</p>}
+              </div>
+            ));
+          })()}
         </div>
 
         {/* Severity + category chips */}
@@ -413,6 +444,7 @@ function CompletedView({ data, activeTab, setActiveTab, expandedBug, setExpanded
       <div className="scan-tabs" style={{ display: "flex", gap: 0, borderBottom: `1px solid ${t.border}`, overflowX: "auto" }}>
         {([
           { key: "bugs" as const, label: `Bugs (${data.bugs.length})` },
+          ...(data.flows && data.flows.length > 0 ? [{ key: "flows" as const, label: `Flows (${data.flows.length})` }] : []),
           { key: "flowmap" as const, label: "Flow Map" },
           { key: "performance" as const, label: "Performance" },
           { key: "pages" as const, label: `Pages (${data.pages_tested})` },
@@ -431,6 +463,7 @@ function CompletedView({ data, activeTab, setActiveTab, expandedBug, setExpanded
 
       <section style={{ padding: "32px 0 80px" }}>
         {activeTab === "bugs" && <BugsTab bugs={data.bugs} expandedBug={expandedBug} setExpandedBug={setExpandedBug} t={t} />}
+        {activeTab === "flows" && <FlowsTab flows={data.flows || []} t={t} />}
         {activeTab === "flowmap" && <FlowMapView graph={data.site_graph} bugs={data.bugs} t={t} />}
         {activeTab === "performance" && <PerformanceTab metrics={data.metrics} t={t} />}
         {activeTab === "pages" && <PagesTab pages={data.pages_visited} bugs={data.bugs} graph={data.site_graph} t={t} />}
@@ -592,6 +625,147 @@ function BugsTab({ bugs, expandedBug, setExpandedBug, t }: {
                 {isGroupExpanded ? "Show less" : `Show all ${catBugs.length} bugs`}
               </button>
             )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ─── Flows Tab (Flow Verifications) ─── */
+
+function FlowsTab({ flows, t }: { flows: FlowResult[]; t: Theme }) {
+  if (flows.length === 0) {
+    return (
+      <div style={{ padding: "60px 0", textAlign: "center" }}>
+        <p style={{ color: t.textMuted, fontSize: 14 }}>No flow verifications for this scan.</p>
+        <p style={{ color: t.textMuted, fontSize: 12, marginTop: 8 }}>Flow-based testing runs after discovery. Try scanning a site with search, login, or forms.</p>
+      </div>
+    );
+  }
+
+  const actionLabels: Record<string, string> = {
+    navigate: "Navigate",
+    click: "Click",
+    fill_form: "Fill form",
+    search: "Search",
+    verify: "Verify",
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      <p style={{ color: t.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
+        Flow Verifications · How the model behaved
+      </p>
+      <p style={{ color: t.textSecondary, fontSize: 12, maxWidth: 600, marginBottom: 24, lineHeight: 1.6 }}>
+        FlowLens uses heuristic selector rules first. When the page structure is ambiguous, it falls back to AI to find the right element. This keeps scans fast and accurate.
+      </p>
+
+      {flows.map((fr, fi) => {
+        const statusColor = fr.status === "passed" ? "#28c840" : fr.status === "failed" ? "#ef4444" : "#f59e0b";
+        const heuristicCount = fr.steps.filter(s => !s.ai_used).length;
+        const aiCount = fr.steps.filter(s => s.ai_used).length;
+
+        return (
+          <div
+            key={fi}
+            style={{
+              background: t.card,
+              border: `1px solid ${t.cardBorder}`,
+              borderRadius: t.radius,
+              boxShadow: t.cardShadow,
+              overflow: "hidden",
+            }}
+          >
+            <div style={{
+              padding: "16px 20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: 12,
+              borderBottom: `1px solid ${t.cardBorder}`,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: t.text }}>{fr.flow.name}</span>
+                <span style={{
+                  padding: "3px 10px",
+                  fontSize: 10,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  background: `${statusColor}20`,
+                  color: statusColor,
+                  borderRadius: 4,
+                }}>
+                  {fr.status}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: t.textMuted }}>
+                <span>{fr.duration_ms}ms</span>
+                <span>·</span>
+                <span>{heuristicCount} heuristic, {aiCount} AI-assisted</span>
+              </div>
+            </div>
+
+            <div style={{ padding: "12px 20px 20px" }}>
+              {fr.steps.map((sr, si) => (
+                <div
+                  key={si}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 12,
+                    padding: "12px 0",
+                    borderBottom: si < fr.steps.length - 1 ? `1px solid ${t.borderSubtle}` : "none",
+                  }}
+                >
+                  <span style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    fontSize: 11,
+                    background: sr.status === "passed" ? "rgba(40,200,64,0.15)" : sr.status === "failed" ? "rgba(239,68,68,0.15)" : "rgba(136,136,136,0.15)",
+                    color: sr.status === "passed" ? "#28c840" : sr.status === "failed" ? "#ef4444" : t.textMuted,
+                  }}>
+                    {sr.status === "passed" ? "✓" : sr.status === "failed" ? "✗" : "−"}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ color: t.text, fontSize: 12 }}>
+                        {actionLabels[sr.step.action] || sr.step.action}: {sr.step.target || "(none)"}
+                      </span>
+                      <span style={{
+                        padding: "2px 6px",
+                        fontSize: 9,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        background: sr.ai_used ? "rgba(147,51,234,0.15)" : t.hoverBg,
+                        color: sr.ai_used ? "#a78bfa" : t.textMuted,
+                        borderRadius: 4,
+                      }}>
+                        {sr.ai_used ? "AI-assisted" : "Heuristic"}
+                      </span>
+                    </div>
+                    {sr.error && (
+                      <p style={{ color: "#ef4444", fontSize: 11, marginTop: 4 }}>{sr.error}</p>
+                    )}
+                    {sr.screenshot_b64 && (
+                      <div style={{ marginTop: 8 }}>
+                        <img
+                          src={`data:image/jpeg;base64,${sr.screenshot_b64}`}
+                          alt={`Step ${si + 1}`}
+                          style={{ maxWidth: "100%", maxHeight: 200, borderRadius: 6, border: `1px solid ${t.cardBorder}` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         );
       })}

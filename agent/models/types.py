@@ -77,3 +77,4 @@ class CrawlResult:
     started_at: datetime = field(default_factory=datetime.now)
     completed_at: datetime | None = None
     health_score: int | None = None
+    flows: list = field(default_factory=list)  # list[FlowResult], avoids circular import

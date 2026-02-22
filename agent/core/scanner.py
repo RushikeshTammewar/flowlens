@@ -15,6 +15,8 @@ from typing import Callable
 from playwright.async_api import async_playwright
 
 from agent.core.explorer import SiteExplorer
+from agent.core.flow_planner import identify_flows
+from agent.core.flow_runner import FlowRunner
 from agent.models.graph import SiteGraph, ProgressCallback
 from agent.models.types import CrawlResult, BugFinding, PageMetrics
 
@@ -67,6 +69,22 @@ class FlowLensScanner:
 
                 if self._graph is None:
                     self._graph = graph
+
+                # Phase B + C: Flow identification and execution (desktop only)
+                if viewport_name == "desktop" and self._graph and len(self._graph.nodes) > 0:
+                    try:
+                        flows = await identify_flows(self._graph)
+                        if flows:
+                            runner = FlowRunner(
+                                page=page,
+                                root_url=self.url,
+                                graph=self._graph,
+                                on_progress=self._on_progress,
+                            )
+                            flow_results = await runner.execute_flows(flows)
+                            self.result.flows = flow_results  # FlowResult objects, serialized in API
+                    except Exception:
+                        pass
 
                 # Extract results from graph nodes
                 for node in graph.nodes.values():
