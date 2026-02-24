@@ -46,6 +46,9 @@ class FlowRunner:
         on_progress: callable | None = None,
         playwright_instance: Playwright | None = None,
         browser_context: BrowserContext | None = None,
+        auth_cookie_event: object | None = None,
+        auth_cookie_store: dict | None = None,
+        scan_id: str | None = None,
     ):
         self.page = page
         self.root_url = root_url.rstrip("/")
@@ -56,6 +59,9 @@ class FlowRunner:
             playwright_instance=playwright_instance,
             headless_context=browser_context,
             on_progress=self._on_progress,
+            auth_cookie_event=auth_cookie_event,
+            auth_cookie_store=auth_cookie_store,
+            scan_id=scan_id,
         )
         self._state_verifier = StateVerifier()
         self._site_type: str = "generic"

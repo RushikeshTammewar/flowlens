@@ -83,22 +83,27 @@ _LOGIN_KEYWORDS = {"login", "signin", "sign-in", "sign_in", "auth", "authenticat
 
 
 class AuthHandler:
-    """Manages authentication via headful browser during flow execution."""
+    """Manages authentication via headful browser or remote browser session."""
 
     def __init__(
         self,
         playwright_instance: Playwright | None = None,
         headless_context: BrowserContext | None = None,
         on_progress: callable | None = None,
+        auth_cookie_event: asyncio.Event | None = None,
+        auth_cookie_store: dict | None = None,
+        scan_id: str | None = None,
     ):
         self._pw = playwright_instance
         self._headless_ctx = headless_context
         self._auth_attempted: set[str] = set()
         self._cached_cookies: list[dict] | None = None
         self._on_progress = on_progress or (lambda *_: None)
+        self._cookie_event = auth_cookie_event
+        self._cookie_store = auth_cookie_store or {}
+        self._scan_id = scan_id
 
     def set_playwright(self, pw: Playwright, ctx: BrowserContext):
-        """Set the playwright instance and headless context (called by scanner)."""
         self._pw = pw
         self._headless_ctx = ctx
 
@@ -132,17 +137,41 @@ class AuthHandler:
         if self._cached_cookies:
             return await self._inject_cached_cookies(page)
 
-        # No playwright instance = server mode (no display) or headless-only mode
+        # Server mode: no local display -- use remote browser via web UI
         if not self._pw:
             self._on_progress("auth_required", {
                 "url": page_url,
                 "title": login_info.get("title", ""),
-                "message": "Login detected. Use CLI with --headful for interactive login.",
+                "message": "Login detected. Please log in via the browser window.",
             })
+
+            # Wait for cookies from remote browser session (started by web UI)
+            if self._cookie_event:
+                try:
+                    await asyncio.wait_for(self._cookie_event.wait(), timeout=300)
+                    cookies = self._cookie_store.get(self._scan_id, [])
+                    if cookies and self._headless_ctx:
+                        await self._headless_ctx.add_cookies(cookies)
+                        self._cached_cookies = cookies
+                        try:
+                            await page.reload(wait_until="domcontentloaded", timeout=15000)
+                            await page.wait_for_timeout(2000)
+                        except Exception:
+                            pass
+                        return AuthResult(
+                            success=True,
+                            method="remote_browser",
+                            message=f"Login via remote browser. {len(cookies)} cookies injected.",
+                            url_after=page.url,
+                            cookies_injected=len(cookies),
+                        )
+                except asyncio.TimeoutError:
+                    pass
+
             return AuthResult(
                 success=False,
                 method="skipped",
-                message=f"Login detected at {_short_url(page_url)}. Auth-gated flows will be skipped. Use CLI with --headful for interactive login.",
+                message=f"Login detected at {_short_url(page_url)}. No credentials provided within timeout.",
                 url_after=page.url,
             )
 

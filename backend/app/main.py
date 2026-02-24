@@ -1,4 +1,4 @@
-"""FlowLens API — Backend server with SSE streaming for live scan progress."""
+"""FlowLens API — Backend server with SSE streaming and remote browser login."""
 
 import asyncio
 import json
@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from agent.core.scanner import FlowLensScanner
 from agent.models.types import CrawlResult
+from backend.app.remote_browser import RemoteBrowserSession
 
-app = FastAPI(title="FlowLens API", version="0.2.0")
+app = FastAPI(title="FlowLens API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,8 +35,10 @@ app.add_middleware(
 )
 
 scans: dict[str, dict] = {}
-# Per-scan event queues for SSE streaming
 _event_queues: dict[str, list[asyncio.Queue]] = {}
+_remote_browsers: dict[str, RemoteBrowserSession] = {}
+_auth_cookie_events: dict[str, asyncio.Event] = {}
+_auth_cookies: dict[str, list[dict]] = {}
 
 
 class ScanRequest(BaseModel):
@@ -50,10 +53,30 @@ class ScanResponse(BaseModel):
     url: str
 
 
+class ClickRequest(BaseModel):
+    x: float
+    y: float
+
+
+class TypeRequest(BaseModel):
+    text: str
+
+
+class KeyRequest(BaseModel):
+    key: str
+
+
+class ScrollRequest(BaseModel):
+    delta_x: float = 0
+    delta_y: float = 0
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "flowlens-api", "version": "0.2.0"}
+    return {"status": "ok", "service": "flowlens-api", "version": "0.3.0"}
 
+
+# ─── Scan endpoints ───
 
 @app.post("/api/v1/scan", response_model=ScanResponse)
 async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
@@ -70,8 +93,10 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
         "started_at": datetime.now().isoformat(),
         "result": None,
         "error": None,
+        "browser_context": None,
     }
     _event_queues[scan_id] = []
+    _auth_cookie_events[scan_id] = asyncio.Event()
 
     background_tasks.add_task(run_scan, scan_id, url, req.max_pages, req.viewports)
 
@@ -95,11 +120,10 @@ async def scan_stream(scan_id: str, request: Request):
             while True:
                 if await request.is_disconnected():
                     break
-
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30.0)
                 except asyncio.TimeoutError:
-                    yield f": keepalive\n\n"
+                    yield ": keepalive\n\n"
                     continue
 
                 if event is None:
@@ -164,14 +188,10 @@ async def get_scan(scan_id: str):
             },
             "metrics": [
                 {
-                    "url": m.url,
-                    "viewport": m.viewport,
-                    "load_time_ms": m.load_time_ms,
-                    "ttfb_ms": m.ttfb_ms,
-                    "fcp_ms": m.fcp_ms,
-                    "dom_node_count": m.dom_node_count,
-                    "request_count": m.request_count,
-                    "transfer_bytes": m.transfer_bytes,
+                    "url": m.url, "viewport": m.viewport,
+                    "load_time_ms": m.load_time_ms, "ttfb_ms": m.ttfb_ms,
+                    "fcp_ms": m.fcp_ms, "dom_node_count": m.dom_node_count,
+                    "request_count": m.request_count, "transfer_bytes": m.transfer_bytes,
                 }
                 for m in result.metrics
             ],
@@ -205,8 +225,102 @@ async def list_scans():
     ]
 
 
+# ─── Remote browser auth endpoints ───
+
+@app.post("/api/v1/scan/{scan_id}/auth/start")
+async def auth_start(scan_id: str, background_tasks: BackgroundTasks):
+    """Launch a remote browser for the user to log in."""
+    if scan_id not in scans:
+        return {"error": "Scan not found"}
+
+    scan = scans[scan_id]
+    login_url = scan.get("auth_login_url")
+    if not login_url:
+        return {"error": "No login URL available for this scan"}
+
+    if scan_id in _remote_browsers:
+        return {"status": "already_running"}
+
+    def on_frame(b64: str):
+        _broadcast_event(scan_id, "auth_frame", {"frame": b64})
+
+    def on_auth_complete(success: bool, message: str, cookies: list[dict]):
+        _auth_cookies[scan_id] = cookies
+        _auth_cookie_events.get(scan_id, asyncio.Event()).set()
+        _broadcast_event(scan_id, "auth_complete", {
+            "success": success,
+            "message": message,
+            "cookies_count": len(cookies),
+        })
+
+    session = RemoteBrowserSession(
+        login_url=login_url,
+        on_frame=on_frame,
+        on_auth_complete=on_auth_complete,
+    )
+    _remote_browsers[scan_id] = session
+
+    background_tasks.add_task(_run_remote_browser, scan_id, session)
+    return {"status": "started", "login_url": login_url}
+
+
+@app.post("/api/v1/scan/{scan_id}/auth/click")
+async def auth_click(scan_id: str, req: ClickRequest):
+    session = _remote_browsers.get(scan_id)
+    if not session:
+        return {"error": "No remote browser session"}
+    await session.click(req.x, req.y)
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/scan/{scan_id}/auth/type")
+async def auth_type(scan_id: str, req: TypeRequest):
+    session = _remote_browsers.get(scan_id)
+    if not session:
+        return {"error": "No remote browser session"}
+    await session.type_text(req.text)
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/scan/{scan_id}/auth/keypress")
+async def auth_keypress(scan_id: str, req: KeyRequest):
+    session = _remote_browsers.get(scan_id)
+    if not session:
+        return {"error": "No remote browser session"}
+    await session.press_key(req.key)
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/scan/{scan_id}/auth/scroll")
+async def auth_scroll(scan_id: str, req: ScrollRequest):
+    session = _remote_browsers.get(scan_id)
+    if not session:
+        return {"error": "No remote browser session"}
+    await session.scroll(req.delta_x, req.delta_y)
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/scan/{scan_id}/auth/done")
+async def auth_done(scan_id: str):
+    """User manually signals login is complete."""
+    session = _remote_browsers.get(scan_id)
+    if session:
+        cookies = await session.get_cookies()
+        _auth_cookies[scan_id] = cookies
+        _auth_cookie_events.get(scan_id, asyncio.Event()).set()
+        _broadcast_event(scan_id, "auth_complete", {
+            "success": True,
+            "message": "User confirmed login complete",
+            "cookies_count": len(cookies),
+        })
+        await session.close()
+        _remote_browsers.pop(scan_id, None)
+    return {"status": "ok"}
+
+
+# ─── Internal helpers ───
+
 def _broadcast_event(scan_id: str, event_type: str, data: dict):
-    """Push an SSE event to all connected clients for this scan."""
     event = {"type": event_type, **data}
     queues = _event_queues.get(scan_id, [])
     for q in queues:
@@ -216,16 +330,38 @@ def _broadcast_event(scan_id: str, event_type: str, data: dict):
             pass
 
 
+async def _run_remote_browser(scan_id: str, session: RemoteBrowserSession):
+    try:
+        await session.start()
+        while not session.is_authenticated and scan_id in _remote_browsers:
+            await asyncio.sleep(1)
+    except Exception as e:
+        _broadcast_event(scan_id, "auth_error", {"error": str(e)[:300]})
+    finally:
+        if scan_id in _remote_browsers:
+            try:
+                await session.close()
+            except Exception:
+                pass
+            _remote_browsers.pop(scan_id, None)
+
+
 async def run_scan(scan_id: str, url: str, max_pages: int, viewports: list[str]):
     try:
         def on_progress(event_type: str, data: dict):
             _broadcast_event(scan_id, event_type, data)
+
+            if event_type == "auth_required":
+                scans[scan_id]["auth_login_url"] = data.get("url", "")
 
         scanner = FlowLensScanner(
             url=url,
             max_pages=max_pages,
             viewports=viewports,
             on_progress=on_progress,
+            auth_cookie_event=_auth_cookie_events.get(scan_id),
+            auth_cookie_store=_auth_cookies,
+            scan_id=scan_id,
         )
         result = await scanner.scan()
         scans[scan_id]["status"] = "completed"
@@ -237,12 +373,15 @@ async def run_scan(scan_id: str, url: str, max_pages: int, viewports: list[str])
         scans[scan_id]["error"] = str(e)[:500]
         _broadcast_event(scan_id, "scan_failed", {"error": str(e)[:500]})
 
-    # Signal end to all SSE listeners
     for q in _event_queues.get(scan_id, []):
         try:
             q.put_nowait(None)
         except asyncio.QueueFull:
             pass
+
+    _remote_browsers.pop(scan_id, None)
+    _auth_cookie_events.pop(scan_id, None)
+    _auth_cookies.pop(scan_id, None)
 
 
 def _count_by(bugs, attr: str) -> dict[str, int]:

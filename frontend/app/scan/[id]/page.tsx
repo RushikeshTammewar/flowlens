@@ -172,6 +172,11 @@ export default function ScanResultPage() {
   const logIdRef = useRef(0);
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authLoginUrl, setAuthLoginUrl] = useState("");
+  const [authFrame, setAuthFrame] = useState<string | null>(null);
+  const [authStarted, setAuthStarted] = useState(false);
+
   const addLog = useCallback((text: string, type: LogEntry["type"] = "info") => {
     logIdRef.current += 1;
     setLogEntries(prev => [...prev.slice(-150), { id: logIdRef.current, text, type, timestamp: Date.now() }]);
@@ -234,7 +239,27 @@ export default function ScanResultPage() {
     });
     es.addEventListener("auth_required", (e) => {
       const d = JSON.parse(e.data);
-      addLog(`Login detected at ${d.url?.substring(0, 60) || "unknown"}. Use CLI with --headful for interactive login.`, "auth");
+      setAuthRequired(true);
+      setAuthLoginUrl(d.url || "");
+      addLog(`Login detected — opening remote browser...`, "auth");
+    });
+    es.addEventListener("auth_frame", (e) => {
+      const d = JSON.parse(e.data);
+      setAuthFrame(d.frame || null);
+    });
+    es.addEventListener("auth_complete", (e) => {
+      const d = JSON.parse(e.data);
+      setAuthRequired(false);
+      setAuthFrame(null);
+      setAuthStarted(false);
+      addLog(`Login ${d.success ? "successful" : "failed"}: ${d.message}`, d.success ? "complete" : "bug");
+    });
+    es.addEventListener("auth_error", (e) => {
+      const d = JSON.parse(e.data);
+      setAuthRequired(false);
+      setAuthFrame(null);
+      setAuthStarted(false);
+      addLog(`Login error: ${d.error}`, "bug");
     });
     es.addEventListener("auth_attempted", (e) => {
       const d = JSON.parse(e.data);
@@ -289,6 +314,23 @@ export default function ScanResultPage() {
           <Report data={data} />
         }
       </main>
+
+      {/* Remote browser login overlay */}
+      {authRequired && (
+        <RemoteBrowserModal
+          scanId={scanId}
+          loginUrl={authLoginUrl}
+          frame={authFrame}
+          started={authStarted}
+          onStart={() => {
+            setAuthStarted(true);
+            fetch(`${API_URL}/api/v1/scan/${scanId}/auth/start`, { method: "POST" }).catch(() => {});
+          }}
+          onDone={() => {
+            fetch(`${API_URL}/api/v1/scan/${scanId}/auth/done`, { method: "POST" }).catch(() => {});
+          }}
+        />
+      )}
 
       <style jsx global>{`
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -795,6 +837,187 @@ function StatCard({ value, label, sub, color, ring, ringMax }: {
       <div style={{ fontSize: 10, color: T.textMuted, letterSpacing: "0.08em" }}>{label.toUpperCase()}</div>
       {sub && <div style={{ fontSize: 10, color: c === T.text ? T.textMuted : c, marginTop: 2, opacity: 0.7 }}>{sub}</div>}
     </Card>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   REMOTE BROWSER LOGIN MODAL
+   ═══════════════════════════════════════════════════════════ */
+
+function RemoteBrowserModal({ scanId, loginUrl, frame, started, onStart, onDone }: {
+  scanId: string;
+  loginUrl: string;
+  frame: string | null;
+  started: boolean;
+  onStart: () => void;
+  onDone: () => void;
+}) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [typing, setTyping] = useState(false);
+
+  const BROWSER_W = 1280;
+  const BROWSER_H = 800;
+
+  useEffect(() => {
+    if (!started && loginUrl) {
+      onStart();
+    }
+  }, [started, loginUrl, onStart]);
+
+  useEffect(() => {
+    if (frame && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [frame]);
+
+  const handleClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (!imgRef.current) return;
+    const rect = imgRef.current.getBoundingClientRect();
+    const scaleX = BROWSER_W / rect.width;
+    const scaleY = BROWSER_H / rect.height;
+    const x = Math.round((e.clientX - rect.left) * scaleX);
+    const y = Math.round((e.clientY - rect.top) * scaleY);
+    fetch(`${API_URL}/api/v1/scan/${scanId}/auth/click`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x, y }),
+    }).catch(() => {});
+    setTyping(true);
+    inputRef.current?.focus();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    const specialKeys: Record<string, string> = {
+      Enter: "Enter", Tab: "Tab", Backspace: "Backspace", Escape: "Escape",
+      ArrowUp: "ArrowUp", ArrowDown: "ArrowDown", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight",
+      Delete: "Delete", Home: "Home", End: "End",
+    };
+    if (specialKeys[e.key]) {
+      e.preventDefault();
+      fetch(`${API_URL}/api/v1/scan/${scanId}/auth/keypress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: specialKeys[e.key] }),
+      }).catch(() => {});
+    }
+  };
+
+  const handleInput = (e: React.FormEvent<HTMLInputElement>) => {
+    const value = (e.target as HTMLInputElement).value;
+    if (value) {
+      fetch(`${API_URL}/api/v1/scan/${scanId}/auth/type`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: value }),
+      }).catch(() => {});
+      (e.target as HTMLInputElement).value = "";
+    }
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 9999,
+      background: "rgba(0,0,0,0.85)",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      backdropFilter: "blur(8px)",
+    }}>
+      <div style={{ marginBottom: 16, textAlign: "center" }}>
+        <p style={{ fontSize: 11, letterSpacing: "0.1em", color: T.yellow, marginBottom: 6 }}>LOGIN REQUIRED</p>
+        <p style={{ fontSize: 14, color: T.text, fontFamily: "'Instrument Serif', serif", marginBottom: 4 }}>
+          Log in to continue scanning
+        </p>
+        <p style={{ fontSize: 11, color: T.textMuted }}>
+          {shortUrl(loginUrl)} — click and type directly below
+        </p>
+      </div>
+
+      <div style={{
+        position: "relative",
+        borderRadius: 12,
+        overflow: "hidden",
+        border: `2px solid ${T.yellow}40`,
+        boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
+        maxWidth: "90vw",
+        maxHeight: "75vh",
+      }}>
+        {frame ? (
+          <>
+            <img
+              ref={imgRef}
+              src={`data:image/jpeg;base64,${frame}`}
+              alt="Remote browser"
+              onClick={handleClick}
+              style={{
+                display: "block",
+                width: "min(880px, 88vw)",
+                height: "auto",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+              draggable={false}
+            />
+            <input
+              ref={inputRef}
+              onKeyDown={handleKeyDown}
+              onInput={handleInput}
+              style={{
+                position: "absolute",
+                opacity: 0,
+                width: 1,
+                height: 1,
+                top: 0,
+                left: 0,
+                pointerEvents: "none",
+              }}
+              autoFocus
+            />
+          </>
+        ) : (
+          <div style={{
+            width: 880, height: 550,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: T.bgAlt,
+          }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{
+                width: 32, height: 32, border: `2px solid ${T.border}`, borderTopColor: T.yellow,
+                borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 16px",
+              }} />
+              <p style={{ color: T.textMuted, fontSize: 12 }}>Opening remote browser...</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 16, display: "flex", gap: 12, alignItems: "center" }}>
+        {frame && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "6px 14px", borderRadius: 8,
+            background: T.accentDim, border: `1px solid ${T.accent}30`,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, animation: "pulse 1.5s infinite" }} />
+            <span style={{ fontSize: 11, color: T.accent }}>Live</span>
+          </div>
+        )}
+        <button
+          onClick={onDone}
+          style={{
+            padding: "8px 20px", borderRadius: 8,
+            background: T.accent, color: "#000",
+            fontSize: 12, fontWeight: 600, fontFamily: "inherit",
+            border: "none", cursor: "pointer",
+            letterSpacing: "0.04em",
+          }}
+        >
+          I&apos;m logged in
+        </button>
+        <p style={{ fontSize: 10, color: T.textMuted }}>
+          FlowLens will also auto-detect login success
+        </p>
+      </div>
+    </div>
   );
 }
 

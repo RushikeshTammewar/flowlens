@@ -37,6 +37,9 @@ class FlowLensScanner:
         viewports: list[str] | None = None,
         on_progress: ProgressCallback | None = None,
         headful: bool = False,
+        auth_cookie_event: object | None = None,
+        auth_cookie_store: dict | None = None,
+        scan_id: str | None = None,
     ):
         self.url = url
         self.max_pages = max_pages
@@ -46,6 +49,9 @@ class FlowLensScanner:
         self._graph: SiteGraph | None = None
         self._on_progress = on_progress
         self._headful = headful
+        self._auth_cookie_event = auth_cookie_event
+        self._auth_cookie_store = auth_cookie_store or {}
+        self._scan_id = scan_id
 
     async def scan(self) -> CrawlResult:
         self.result.started_at = datetime.now()
@@ -94,6 +100,9 @@ class FlowLensScanner:
                                 on_progress=self._on_progress,
                                 playwright_instance=pw if self._headful else None,
                                 browser_context=ctx,
+                                auth_cookie_event=self._auth_cookie_event,
+                                auth_cookie_store=self._auth_cookie_store,
+                                scan_id=self._scan_id,
                             )
                             flow_results = await runner.execute_flows(flows)
                             self.result.flows = flow_results
