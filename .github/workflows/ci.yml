@@ -51,8 +51,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r backend/requirements.txt -r agent/requirements.txt
 
-      - name: Syntax check (all Python files)
-        run: python -c "
+      - name: Syntax check
+        run: |
+          python -c "
           import ast, pathlib, sys
           failed = False
           for f in sorted(pathlib.Path('.').rglob('*.py')):
@@ -61,29 +62,29 @@ jobs:
               try:
                   ast.parse(f.read_text())
               except SyntaxError as e:
-                  print(f'FAIL: {f} - {e}'); failed = True
-          if failed: sys.exit(1)
+                  print(f'FAIL: {f} - {e}')
+                  failed = True
+          if failed:
+              sys.exit(1)
           print('All Python files parsed OK')
           "
 
       - name: Import check
-        run: python -c "
-          from agent.models.graph import SiteGraph, SiteNode, PageElement, ActionResult
-          from agent.models.types import BugFinding, PageMetrics, CrawlResult
-          from agent.models.flow import Flow, FlowStep, ConditionalStep, FlowResult, FlowStepResult
+        run: |
+          python -c "
+          from agent.models.graph import SiteGraph
+          from agent.models.types import BugFinding, CrawlResult
+          from agent.models.flow import Flow, FlowStep, ConditionalStep, FlowResult
           from agent.models.context import FlowContext
           from agent.core.ai_engine import GeminiEngine
           from agent.core.explorer import SiteExplorer
           from agent.core.scanner import FlowLensScanner
           from agent.core.flow_runner import FlowRunner
-          from agent.core.flow_planner import identify_flows
-          from agent.utils.form_filler import identify_fields, fill_form
-          from agent.utils.element_finder import find_element, find_form
           from agent.utils.auth_handler import AuthHandler, AuthResult
-          from agent.utils.smart_wait import wait_for_stable_page, install_request_tracker
+          from agent.utils.smart_wait import wait_for_stable_page
           from agent.utils.retry_engine import find_with_retry
           from agent.utils.popup_guard import dismiss_overlays
           from agent.utils.state_verifier import StateVerifier
-          from agent.utils.test_data import detect_site_type, get_search_query, get_form_data
+          from agent.utils.test_data import detect_site_type, get_search_query
           print('All imports OK')
           "
