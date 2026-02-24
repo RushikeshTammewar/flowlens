@@ -145,10 +145,11 @@ class AuthHandler:
                 "message": "Login detected. Please log in via the browser window.",
             })
 
-            # Wait for cookies from remote browser session (started by web UI)
+            # Wait briefly for cookies from remote browser (started by web UI)
+            # Use a short timeout so the scan doesn't hang if nobody is watching
             if self._cookie_event:
                 try:
-                    await asyncio.wait_for(self._cookie_event.wait(), timeout=300)
+                    await asyncio.wait_for(self._cookie_event.wait(), timeout=60)
                     cookies = self._cookie_store.get(self._scan_id, [])
                     if cookies and self._headless_ctx:
                         await self._headless_ctx.add_cookies(cookies)
@@ -166,12 +167,15 @@ class AuthHandler:
                             cookies_injected=len(cookies),
                         )
                 except asyncio.TimeoutError:
-                    pass
+                    self._on_progress("auth_timeout", {
+                        "url": page_url,
+                        "message": "Login timeout. Continuing scan without auth.",
+                    })
 
             return AuthResult(
                 success=False,
                 method="skipped",
-                message=f"Login detected at {_short_url(page_url)}. No credentials provided within timeout.",
+                message=f"Login page detected. Continuing without auth — auth-gated flows may fail.",
                 url_after=page.url,
             )
 
