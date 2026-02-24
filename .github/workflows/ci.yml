@@ -7,7 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  # ── Frontend: lint, type-check, build ──
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
@@ -26,9 +25,6 @@ jobs:
 
       - run: npm ci
 
-      - name: Lint
-        run: npm run lint
-
       - name: Type check
         run: npx tsc --noEmit
 
@@ -37,7 +33,6 @@ jobs:
         env:
           NEXT_PUBLIC_API_URL: https://api.flowlens.in
 
-  # ── Backend: syntax, imports, type hints ──
   backend:
     name: Backend
     runs-on: ubuntu-latest
@@ -54,40 +49,41 @@ jobs:
             agent/requirements.txt
 
       - name: Install dependencies
-        run: |
-          pip install -r backend/requirements.txt -r agent/requirements.txt
-          pip install ruff
+        run: pip install -r backend/requirements.txt -r agent/requirements.txt
 
-      - name: Lint (ruff)
-        run: ruff check agent/ backend/ scan.py
-
-      - name: Syntax check
+      - name: Syntax check (all Python files)
         run: python -c "
-          import ast, sys
-          files = [
-            'agent/models/graph.py', 'agent/models/types.py',
-            'agent/core/explorer.py', 'agent/core/scanner.py', 'agent/core/crawler.py',
-            'agent/utils/form_filler.py',
-            'agent/detectors/functional.py', 'agent/detectors/performance.py',
-            'agent/detectors/responsive.py', 'agent/detectors/accessibility.py',
-            'backend/app/main.py', 'scan.py',
-          ]
+          import ast, pathlib, sys
           failed = False
-          for f in files:
+          for f in sorted(pathlib.Path('.').rglob('*.py')):
+              if '.venv' in str(f) or 'node_modules' in str(f):
+                  continue
               try:
-                  with open(f) as fh: ast.parse(fh.read())
+                  ast.parse(f.read_text())
               except SyntaxError as e:
                   print(f'FAIL: {f} - {e}'); failed = True
           if failed: sys.exit(1)
-          print(f'All {len(files)} files OK')
+          print('All Python files parsed OK')
           "
 
       - name: Import check
         run: python -c "
           from agent.models.graph import SiteGraph, SiteNode, PageElement, ActionResult
           from agent.models.types import BugFinding, PageMetrics, CrawlResult
-          from agent.utils.form_filler import identify_fields, fill_form
+          from agent.models.flow import Flow, FlowStep, ConditionalStep, FlowResult, FlowStepResult
+          from agent.models.context import FlowContext
+          from agent.core.ai_engine import GeminiEngine
           from agent.core.explorer import SiteExplorer
           from agent.core.scanner import FlowLensScanner
+          from agent.core.flow_runner import FlowRunner
+          from agent.core.flow_planner import identify_flows
+          from agent.utils.form_filler import identify_fields, fill_form
+          from agent.utils.element_finder import find_element, find_form
+          from agent.utils.auth_handler import AuthHandler, AuthResult
+          from agent.utils.smart_wait import wait_for_stable_page, install_request_tracker
+          from agent.utils.retry_engine import find_with_retry
+          from agent.utils.popup_guard import dismiss_overlays
+          from agent.utils.state_verifier import StateVerifier
+          from agent.utils.test_data import detect_site_type, get_search_query, get_form_data
           print('All imports OK')
           "

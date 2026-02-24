@@ -9,11 +9,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── Deploy backend to EC2 ──
-  backend:
-    name: Deploy Backend
+  deploy-backend:
+    name: Deploy Backend to EC2
     runs-on: ubuntu-latest
-    needs: [] # runs immediately; CI runs in parallel
     environment: production
 
     steps:
@@ -24,24 +22,25 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             cd ~/flowlens
 
-            # Pull latest code
+            echo "--- Pulling latest code ---"
             git fetch origin main
             git reset --hard origin/main
 
-            # Install/update Python deps
+            echo "--- Installing Python dependencies ---"
             source .venv/bin/activate
             pip install -q -r backend/requirements.txt -r agent/requirements.txt
 
-            # Install Playwright browsers if needed
+            echo "--- Installing Playwright browsers ---"
             python -m playwright install chromium --with-deps 2>/dev/null || true
 
-            # Restart the backend service
+            echo "--- Restarting backend service ---"
             sudo systemctl restart flowlens-api
 
-            # Health check (wait up to 15s)
-            for i in $(seq 1 15); do
+            echo "--- Health check ---"
+            for i in $(seq 1 20); do
               if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
                 echo "Backend is healthy"
                 exit 0
@@ -50,10 +49,7 @@ jobs:
             done
             echo "Health check failed" && exit 1
 
-  # ── Frontend deploys automatically via Vercel ──
-  # Vercel is connected to the GitHub repo and auto-deploys on push to main.
-  # This job just verifies the build succeeds.
-  frontend:
+  verify-frontend:
     name: Verify Frontend Build
     runs-on: ubuntu-latest
     defaults:
@@ -70,6 +66,9 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
 
       - name: Build
         run: npm run build
