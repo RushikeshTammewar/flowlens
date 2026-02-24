@@ -22,6 +22,8 @@ from agent.detectors.functional import FunctionalDetector
 from agent.detectors.performance import PerformanceDetector
 from agent.detectors.responsive import ResponsiveDetector
 from agent.utils.form_filler import fill_form
+from agent.utils.smart_wait import install_request_tracker, wait_for_stable_page
+from agent.utils.popup_guard import dismiss_overlays
 
 
 _DISCOVER_ELEMENTS_JS = """() => {
@@ -222,7 +224,9 @@ class SiteExplorer:
                 self._emit("page_complete", {"url": node.url, "status": "failed"})
                 return
 
-            await page.wait_for_timeout(1500)
+            await install_request_tracker(page)
+            await _install_spa_observer(page)
+            await wait_for_stable_page(page, timeout_ms=5000)
 
             # Scroll to trigger lazy loading
             await _scroll_page(page)
@@ -231,16 +235,14 @@ class SiteExplorer:
             self._visit_count += 1
 
             self._functional.reset_for_page()
-            # Re-navigate to reset detector state cleanly for this page
-            # (listeners are already attached)
 
         except Exception as e:
             node.status = "failed"
             self._emit("page_complete", {"url": node.url, "status": "failed", "error": str(e)[:200]})
             return
 
-        # Close popups/cookie banners
-        await _dismiss_popups(page)
+        # Close popups/cookie banners using the smarter popup guard
+        await dismiss_overlays(page)
 
         # Discover elements
         elements = await self._discover_elements(page)
@@ -620,6 +622,41 @@ class SiteExplorer:
             self._progress(event_type, data)
         except Exception:
             pass
+
+
+_INSTALL_SPA_OBSERVER_JS = """() => {
+    if (window.__flowlens_spa_installed) return;
+    window.__flowlens_spa_installed = true;
+    window.__flowlens_mutations = 0;
+    window.__flowlens_url_changes = [];
+
+    const observer = new MutationObserver((mutations) => {
+        window.__flowlens_mutations += mutations.length;
+    });
+    observer.observe(document.body || document.documentElement, {
+        childList: true, subtree: true
+    });
+
+    // Track pushState/replaceState for SPA routing
+    const origPush = history.pushState;
+    const origReplace = history.replaceState;
+    history.pushState = function(...args) {
+        window.__flowlens_url_changes.push(args[2] || '');
+        return origPush.apply(this, args);
+    };
+    history.replaceState = function(...args) {
+        window.__flowlens_url_changes.push(args[2] || '');
+        return origReplace.apply(this, args);
+    };
+}"""
+
+
+async def _install_spa_observer(page: Page):
+    """Install SPA mutation and route-change observer."""
+    try:
+        await page.evaluate(_INSTALL_SPA_OBSERVER_JS)
+    except Exception:
+        pass
 
 
 async def _scroll_page(page: Page):

@@ -36,6 +36,7 @@ class FlowLensScanner:
         max_pages: int = 20,
         viewports: list[str] | None = None,
         on_progress: ProgressCallback | None = None,
+        headful: bool = False,
     ):
         self.url = url
         self.max_pages = max_pages
@@ -44,12 +45,13 @@ class FlowLensScanner:
         self.screenshots: dict[str, str] = {}
         self._graph: SiteGraph | None = None
         self._on_progress = on_progress
+        self._headful = headful
 
     async def scan(self) -> CrawlResult:
         self.result.started_at = datetime.now()
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=not self._headful)
 
             for viewport_name in self.viewports:
                 viewport_config = VIEWPORTS.get(viewport_name, VIEWPORTS["desktop"])
@@ -80,9 +82,11 @@ class FlowLensScanner:
                                 root_url=self.url,
                                 graph=self._graph,
                                 on_progress=self._on_progress,
+                                playwright_instance=pw,
+                                browser_context=ctx,
                             )
                             flow_results = await runner.execute_flows(flows)
-                            self.result.flows = flow_results  # FlowResult objects, serialized in API
+                            self.result.flows = flow_results
                     except Exception:
                         pass
 

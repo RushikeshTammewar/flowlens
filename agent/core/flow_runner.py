@@ -1,38 +1,42 @@
-"""Step-by-step flow execution with heuristic-first interaction and AI fallback."""
+"""Flow execution engine -- AI-powered senior QA engineer.
+
+AI is the brain for every non-trivial decision:
+- Pick which element to interact with (AI sees element list, picks best match)
+- Decide what to search for (AI reads page context, generates realistic query)
+- Fill forms intelligently (AI analyzes form, generates appropriate test data)
+- Verify every action outcome (AI sees screenshot, judges pass/fail)
+- Recover from unexpected states (AI decides how to proceed)
+
+Heuristics handle only mechanical tasks: typing, clicking, scrolling, capturing.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import time
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
-from playwright.async_api import Page
+from playwright.async_api import Page, ElementHandle
 
+from agent.core.ai_engine import GeminiEngine
 from agent.models.flow import Flow, FlowStep, FlowResult, FlowStepResult
 from agent.models.graph import SiteGraph
+from agent.models.context import FlowContext
 from agent.utils.element_finder import find_element, find_form
-from agent.utils.form_filler import fill_form
+from agent.utils.form_filler import fill_form as heuristic_fill_form
+from agent.utils.smart_wait import install_request_tracker, wait_for_stable_page
+from agent.utils.popup_guard import dismiss_overlays
+from agent.utils.auth_handler import AuthHandler
+from agent.utils.test_data import detect_site_type
+from agent.utils.state_verifier import StateVerifier
 
-
-_EXTRACT_INTERACTIVE_JS = """() => {
-    const els = [];
-    const interactive = document.querySelectorAll(
-        'a[href], button, input:not([type=hidden]), select, textarea, [role="button"], [role="link"], [onclick]'
-    );
-    for (let i = 0; i < Math.min(interactive.length, 30); i++) {
-        const el = interactive[i];
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) continue;
-        const text = (el.textContent || el.getAttribute('aria-label') || el.placeholder || el.name || '').trim().substring(0, 60);
-        els.push({ i, tag: el.tagName, text });
-    }
-    return els;
-}"""
+from playwright.async_api import BrowserContext, Playwright
 
 
 class FlowRunner:
-    """Executes user flows step-by-step on a Playwright page."""
+    """Executes user flows with AI-powered decision making at every step."""
 
     def __init__(
         self,
@@ -40,14 +44,32 @@ class FlowRunner:
         root_url: str,
         graph: SiteGraph | None = None,
         on_progress: callable | None = None,
+        playwright_instance: Playwright | None = None,
+        browser_context: BrowserContext | None = None,
     ):
         self.page = page
         self.root_url = root_url.rstrip("/")
         self._graph = graph
         self._on_progress = on_progress or (lambda *_: None)
+        self._ai = GeminiEngine()
+        self._auth_handler = AuthHandler(
+            playwright_instance=playwright_instance,
+            headless_context=browser_context,
+            on_progress=self._on_progress,
+        )
+        self._state_verifier = StateVerifier()
+        self._site_type: str = "generic"
 
     async def execute_flows(self, flows: list[Flow]) -> list[FlowResult]:
-        """Execute all flows and return results."""
+        self._state_verifier.attach_listeners(self.page)
+        await install_request_tracker(self.page)
+
+        try:
+            page_text = await self.page.evaluate("() => (document.body?.innerText || '').substring(0, 3000)")
+            self._site_type = detect_site_type(self.root_url, page_text)
+        except Exception:
+            pass
+
         results = []
         for flow in flows:
             result = await self._execute_flow(flow)
@@ -55,136 +77,234 @@ class FlowRunner:
         return results
 
     async def _execute_flow(self, flow: Flow) -> FlowResult:
-        """Execute a single flow."""
         start = time.monotonic()
         step_results: list[FlowStepResult] = []
         status = "passed"
+        ctx = FlowContext(site_type=self._site_type)
 
-        # Start each flow from the root URL
+        # Navigate to root
         try:
-            await self.page.goto(self.root_url, wait_until="domcontentloaded", timeout=15000)
-            await self.page.wait_for_timeout(1000)
+            await self.page.goto(self.root_url, wait_until="domcontentloaded", timeout=20000)
+            await wait_for_stable_page(self.page, timeout_ms=6000)
+            await install_request_tracker(self.page)
+            ctx.record_navigation(self.page.url)
         except Exception:
             pass
 
         for i, step in enumerate(flow.steps):
-            self._on_progress("flow_step", {
+            self._emit("flow_step", {
                 "flow": flow.name,
                 "step_index": i,
                 "step_action": step.action,
                 "step_target": step.target,
             })
 
+            # Pre-step: dismiss overlays
+            dismissed = await dismiss_overlays(self.page)
+            if dismissed:
+                self._emit("popup_dismissed", {"types": dismissed})
+
+            # Pre-step: check for login screen and handle via headful browser
+            auth_result = await self._auth_handler.check_and_handle_login(self.page)
+            if auth_result:
+                ctx.auth_completed = auth_result.success
+                self._emit("auth_attempted", {
+                    "success": auth_result.success,
+                    "method": auth_result.method,
+                    "message": auth_result.message,
+                    "cookies_injected": auth_result.cookies_injected,
+                })
+                if auth_result.success:
+                    await wait_for_stable_page(self.page, timeout_ms=6000)
+                    await install_request_tracker(self.page)
+                    ctx.record_navigation(self.page.url)
+
+            # State snapshot before
+            snapshot_before = await self._state_verifier.take_snapshot(self.page)
             url_before = self.page.url
-            step_result = await self._execute_step(step, url_before)
+
+            # Execute the step
+            step_result = await self._execute_step(step, url_before, ctx)
             step_results.append(step_result)
 
-            if step_result.status == "failed":
+            # State snapshot after + compare
+            snapshot_after = await self._state_verifier.take_snapshot(self.page)
+            state_change = self._state_verifier.compare(snapshot_before, snapshot_after)
+            ctx.record_snapshot(snapshot_after)
+            ctx.record_state_change(state_change)
+
+            step_result.state_changes = {
+                "url_changed": state_change.url_changed,
+                "cookies_set": state_change.cookies_added[:5],
+                "js_errors": state_change.new_console_errors[:3],
+                "network_errors": [e["url"][:80] for e in state_change.new_network_errors[:3]],
+                "dom_changed": state_change.dom_changed,
+            }
+
+            if state_change.has_errors:
+                self._emit("state_errors", {
+                    "step": i,
+                    "js_errors": state_change.new_console_errors[:3],
+                    "network_errors": [e["url"][:80] for e in state_change.new_network_errors[:3]],
+                })
+
+            if self.page.url != url_before:
+                ctx.record_navigation(self.page.url)
+
+            if step_result.status == "passed":
+                ctx.steps_completed += 1
+            elif step_result.status == "failed":
+                ctx.steps_failed += 1
+                # AI decides whether to recover or abort
+                if self._ai.available:
+                    recovery = await self._ai.decide_recovery_action(
+                        self.page,
+                        step_result.error or "Step failed",
+                        f"Flow: {flow.name}, Step {i+1}/{len(flow.steps)}: {step.action} '{step.target}'",
+                    )
+                    if recovery and recovery.get("action") == "skip":
+                        step_result.status = "skipped"
+                        status = "partial"
+                        self._emit("recovery", {"action": "skip", "reasoning": recovery.get("reasoning", "")})
+                        continue
+                    elif recovery and recovery.get("action") in ("dismiss", "navigate_back", "refresh"):
+                        await self._execute_recovery(recovery)
+                        self._emit("recovery", recovery)
+                        step_result.status = "skipped"
+                        status = "partial"
+                        continue
+
                 status = "failed"
                 break
-            if step_result.status == "skipped":
-                status = "partial"
-                # Continue to next step
+            elif step_result.status == "skipped":
+                if status != "failed":
+                    status = "partial"
 
         duration_ms = int((time.monotonic() - start) * 1000)
+
+        self._emit("flow_complete", {
+            "flow": flow.name,
+            "status": status,
+            "duration_ms": duration_ms,
+            "ai_calls": self._ai.stats["calls"],
+            "context": ctx.summary(),
+        })
+
         return FlowResult(
             flow=flow,
             status=status,
             steps=step_results,
             duration_ms=duration_ms,
+            context_summary=ctx.summary(),
         )
 
-    async def _execute_step(self, step: FlowStep, url_before: str) -> FlowStepResult:
-        """Execute a single step with outcome verification. Returns FlowStepResult with ai_used flag."""
-        ai_used = False
+    async def _execute_step(self, step: FlowStep, url_before: str, ctx: FlowContext) -> FlowStepResult:
+        """Execute a step. AI makes every key decision."""
         actual_url = self.page.url
         screenshot_b64: str | None = None
         error: str | None = None
         status = "passed"
-        verification_method = "Heuristic"
+        method = "Heuristic"
 
         try:
-            # Execute the action
+            # ─── NAVIGATE ───
             if step.action == "navigate":
                 target_url = self._resolve_url(step.url_hint or "/")
-                await self.page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
-                await self.page.wait_for_timeout(1000)
+                await self.page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+                await wait_for_stable_page(self.page, timeout_ms=6000)
+                await install_request_tracker(self.page)
                 actual_url = self.page.url
 
+            # ─── CLICK ───
             elif step.action == "click":
-                el = await find_element(self.page, step.target)
-                if not el:
-                    el, ai_used = await self._ai_find_element(step.target)
-                    if ai_used:
-                        verification_method = "AI-assisted (element finding)"
+                el, method = await self._find_element_smart(step.target)
                 if el:
                     await el.click()
-                    await self.page.wait_for_timeout(1500)
+                    await wait_for_stable_page(self.page, timeout_ms=6000)
                     actual_url = self.page.url
                 else:
                     status = "failed"
-                    error = "Element not found"
+                    error = f"Could not find element: '{step.target}'"
 
+            # ─── SEARCH ───
             elif step.action == "search":
-                el = await find_element(self.page, step.target or "search")
-                if not el:
-                    el, ai_used = await self._ai_find_element(step.target or "search box")
-                    if ai_used:
-                        verification_method = "AI-assisted (element finding)"
+                el, method = await self._find_element_smart(step.target or "search box")
                 if el:
-                    await el.fill("test")
+                    # AI decides what to search for
+                    if self._ai.available:
+                        query = await self._ai.decide_search_query(self.page)
+                        method = f"AI search query: '{query}'"
+                    else:
+                        from agent.utils.test_data import get_search_query
+                        query = get_search_query(ctx.site_type)
+                    ctx.search_query_used = query
+                    await el.fill(query)
                     await el.press("Enter")
-                    await self.page.wait_for_timeout(2000)
+                    await wait_for_stable_page(self.page, timeout_ms=8000)
                     actual_url = self.page.url
                 else:
                     status = "failed"
                     error = "Search input not found"
 
+            # ─── FILL FORM ───
             elif step.action == "fill_form":
                 form_sel = await find_form(self.page, step.target or "form")
                 if form_sel:
-                    result = await fill_form(self.page, form_sel)
-                    await self.page.wait_for_timeout(2000)
-                    actual_url = self.page.url
-                    if result.outcome == "error" and result.error:
-                        error = result.error
-                        status = "failed"
+                    # AI analyzes the form and decides how to fill it
+                    if self._ai.available:
+                        ai_fields = await self._ai.analyze_form(self.page, form_sel)
+                        if ai_fields:
+                            filled = await self._fill_form_with_ai(ai_fields)
+                            method = f"AI form fill ({filled} fields)"
+                            # Submit
+                            await self._submit_form(form_sel)
+                            await wait_for_stable_page(self.page, timeout_ms=6000)
+                            actual_url = self.page.url
+                        else:
+                            result = await heuristic_fill_form(self.page, form_sel)
+                            method = "Heuristic form fill (AI fallback failed)"
+                            actual_url = self.page.url
+                            if result.outcome == "error" and result.error:
+                                error = result.error
+                                status = "failed"
+                    else:
+                        result = await heuristic_fill_form(self.page, form_sel)
+                        actual_url = self.page.url
+                        if result.outcome == "error" and result.error:
+                            error = result.error
+                            status = "failed"
                 else:
                     status = "failed"
                     error = "Form not found"
 
+            # ─── VERIFY ───
             elif step.action == "verify":
-                # Explicit verification step
-                success, reason = await self.verify_action_outcome(step, step.verify, url_before)
+                success, reason = await self._verify_smart(
+                    f"verify '{step.target}'", step.verify, url_before,
+                )
                 if not success:
                     status = "failed"
                     error = reason
                 else:
-                    error = reason  # Store success reason
+                    error = reason
 
-            # Capture screenshot after action
+            # ─── SCREENSHOT ───
             try:
                 buf = await self.page.screenshot(full_page=False, type="jpeg", quality=60)
                 screenshot_b64 = base64.b64encode(buf).decode("utf-8")
             except Exception:
                 pass
 
-            # VERIFY outcome if action has a verification requirement
+            # ─── AI VERIFICATION (after every non-verify action) ───
             if step.verify and status == "passed" and step.action != "verify":
-                success, reason = await self.verify_action_outcome(step, step.verify, url_before)
-
-                # Track if AI was used for verification
-                if "AI" in reason or verification_method == "Heuristic":
-                    if "inconclusive" not in reason.lower():
-                        verification_method = "AI verification" if "AI" in reason else "Heuristic"
-
+                action_desc = f"{step.action} '{step.target}'"
+                success, reason = await self._verify_smart(action_desc, step.verify, url_before)
+                method = f"AI verified" if "AI" in reason else method
                 if not success:
                     status = "failed"
                     error = reason
-                else:
-                    # Store the verification success reason
-                    if not error:
-                        error = reason
+                elif not error:
+                    error = reason
 
         except Exception as e:
             status = "failed"
@@ -193,14 +313,160 @@ class FlowRunner:
         return FlowStepResult(
             step=step,
             status=status,
-            actual_url=actual_url,
+            actual_url=actual_url or self.page.url,
             screenshot_b64=screenshot_b64,
             error=error,
-            ai_used=verification_method,
+            ai_used=method,
         )
 
+    async def _find_element_smart(self, target: str) -> tuple[ElementHandle | None, str]:
+        """Find an element: try fast heuristic first, then AI picks the best match."""
+        # Fast path: heuristic (instant, no API call)
+        el = await find_element(self.page, target)
+        if el:
+            return el, "Heuristic"
+
+        # AI path: Gemini sees the element list and picks
+        if self._ai.available:
+            decision = await self._ai.pick_element(self.page, target)
+            if decision and isinstance(decision, dict):
+                idx = decision.get("index", -1)
+                reasoning = decision.get("reasoning", "")
+                if idx >= 0:
+                    sel = ('a[href], button, input:not([type=hidden]), select, textarea, '
+                           '[role="button"], [role="link"], [role="menuitem"], [onclick], '
+                           '[role="tab"], summary')
+                    els = await self.page.query_selector_all(sel)
+                    visible_els = []
+                    for e in els:
+                        try:
+                            if await e.is_visible():
+                                visible_els.append(e)
+                        except Exception:
+                            continue
+                    if idx < len(visible_els):
+                        return visible_els[idx], f"AI: {reasoning[:60]}"
+
+        # Last resort: scroll and retry heuristic
+        try:
+            await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
+            await self.page.wait_for_timeout(500)
+            el = await find_element(self.page, target)
+            if el:
+                return el, "Heuristic (after scroll)"
+            await self.page.evaluate("window.scrollTo(0, 0)")
+        except Exception:
+            pass
+
+        return None, "not_found"
+
+    async def _fill_form_with_ai(self, ai_fields: list[dict]) -> int:
+        """Fill form fields using AI-generated data."""
+        filled = 0
+        for field_info in ai_fields:
+            sel = field_info.get("selector", "")
+            value = field_info.get("value", "")
+            action = field_info.get("action", "fill")
+
+            if not sel or not value:
+                continue
+
+            try:
+                el = await self.page.query_selector(sel)
+                if not el or not await el.is_visible():
+                    continue
+
+                if action == "select":
+                    await el.select_option(value)
+                elif action == "check":
+                    if not await el.is_checked():
+                        await el.check()
+                else:
+                    await el.fill(value)
+                filled += 1
+            except Exception:
+                continue
+
+        return filled
+
+    async def _submit_form(self, form_selector: str):
+        """Find and click the form's submit button."""
+        submit_sels = [
+            f"{form_selector} button[type=submit]",
+            f"{form_selector} input[type=submit]",
+            f"{form_selector} button:not([type])",
+        ]
+        for sel in submit_sels:
+            try:
+                btn = await self.page.query_selector(sel)
+                if btn and await btn.is_visible():
+                    await btn.click()
+                    return
+            except Exception:
+                continue
+        # Fallback: submit via JS
+        try:
+            await self.page.evaluate(f"document.querySelector('{form_selector}')?.submit()")
+        except Exception:
+            pass
+
+    async def _verify_smart(self, action_desc: str, expected: str, url_before: str) -> tuple[bool, str]:
+        """Verify an action outcome: AI as primary, heuristic as fast check."""
+        if not expected:
+            return (True, "No verification needed")
+
+        # Quick heuristic checks first (instant)
+        expected_lower = expected.lower()
+
+        # Error detection (always check)
+        error_text = await self.page.evaluate("""() => {
+            const sels = ['[role="alert"]', '.error', '.alert-danger', '[class*="error"]'];
+            for (const sel of sels) {
+                const el = document.querySelector(sel);
+                if (el && el.textContent.trim().length > 5) return el.textContent.trim().substring(0, 200);
+            }
+            return null;
+        }""")
+        if error_text:
+            return (False, f"Error on page: {error_text}")
+
+        # Redirect check
+        if "redirect" in expected_lower:
+            if self.page.url != url_before:
+                return (True, f"Redirected to {self.page.url}")
+            return (False, "Expected redirect but URL unchanged")
+
+        # AI verification (the real deal)
+        if self._ai.available:
+            return await self._ai.verify_action(self.page, action_desc, expected)
+
+        # Fallback: basic content check
+        content = await self.page.evaluate("() => ({words: (document.body?.innerText || '').split(/\\s+/).length})")
+        if content.get("words", 0) > 30:
+            return (True, f"Content present ({content['words']} words)")
+        return (False, "Page appears empty")
+
+    async def _execute_recovery(self, recovery: dict):
+        """Execute a recovery action suggested by AI."""
+        action = recovery.get("action")
+        try:
+            if action == "dismiss":
+                target = recovery.get("target", "")
+                if target:
+                    el = await self.page.query_selector(target)
+                    if el and await el.is_visible():
+                        await el.click()
+                        await self.page.wait_for_timeout(500)
+            elif action == "navigate_back":
+                await self.page.go_back()
+                await wait_for_stable_page(self.page, timeout_ms=5000)
+            elif action == "refresh":
+                await self.page.reload()
+                await wait_for_stable_page(self.page, timeout_ms=5000)
+        except Exception:
+            pass
+
     def _resolve_url(self, hint: str) -> str:
-        """Resolve a URL hint to a full URL."""
         if hint.startswith("http"):
             return hint
         parsed = urlparse(self.root_url)
@@ -208,315 +474,8 @@ class FlowRunner:
         path = hint if hint.startswith("/") else f"/{hint}"
         return base + path
 
-    async def _verify_outcome(self, expected: str, url_before: str) -> bool:
-        """Legacy method - redirects to new comprehensive verification."""
-        success, _ = await self.verify_action_outcome(None, expected, url_before)
-        return success
-
-    async def verify_action_outcome(
-        self,
-        step: FlowStep | None,
-        expected: str,
-        url_before: str,
-    ) -> tuple[bool, str]:
-        """
-        Comprehensive action outcome verification.
-
-        Returns:
-            (success: bool, reason: str)
-        """
-        if not expected:
-            return (True, "No verification needed")
-
-        expected_lower = expected.lower()
-
-        # Check for error messages first (always fail if errors present)
-        error_indicators = await self.page.evaluate("""() => {
-            const errorSelectors = [
-                '[role="alert"]',
-                '.error', '.alert', '.warning',
-                '[class*="error"]', '[class*="alert"]',
-                '.invalid-feedback', '.error-message'
-            ];
-            for (const sel of errorSelectors) {
-                const el = document.querySelector(sel);
-                if (el && el.textContent.trim()) {
-                    return el.textContent.trim().substring(0, 200);
-                }
-            }
-            return null;
-        }""")
-
-        if error_indicators:
-            return (False, f"Error message detected: {error_indicators}")
-
-        # URL change verification
-        if "redirect" in expected_lower or "navigate" in expected_lower:
-            if self.page.url != url_before:
-                return (True, f"Redirected to {self.page.url}")
-            else:
-                return (False, "Expected redirect but URL did not change")
-
-        # For search actions
-        if step and step.action == "search":
-            return await self._verify_search_results(expected)
-
-        # For form submissions
-        if step and step.action == "fill_form":
-            return await self._verify_form_submission(expected)
-
-        # Generic "results appear" or "content loads"
-        if "results" in expected_lower or "appear" in expected_lower or "loads" in expected_lower:
-            return await self._verify_content_loaded(expected)
-
-        # If we can't verify heuristically, default to success
-        return (True, "Action completed")
-
-    async def _verify_search_results(self, expected: str) -> tuple[bool, str]:
-        """Verify that search returned results."""
-        results_info = await self.page.evaluate("""() => {
-            // Look for common result container patterns
-            const selectors = [
-                '[role="list"]', '[role="listbox"]',
-                '.results', '.search-results', '[class*="result"]',
-                'article', '.item', '.product', '.post'
-            ];
-
-            let count = 0;
-            for (const sel of selectors) {
-                const elements = document.querySelectorAll(sel);
-                if (elements.length > 0) {
-                    count = Math.max(count, elements.length);
-                }
-            }
-
-            // Check for "no results" messages
-            const bodyText = document.body.textContent.toLowerCase();
-            const hasNoResults =
-                bodyText.includes('no results') ||
-                bodyText.includes('0 results') ||
-                bodyText.includes('nothing found') ||
-                bodyText.includes('no matches') ||
-                bodyText.includes('did not match');
-
-            return {count, hasNoResults};
-        }""")
-
-        if results_info.get('hasNoResults'):
-            return (False, "Search returned no results")
-
-        if results_info.get('count', 0) >= 3:
-            return (True, f"Search results displayed ({results_info['count']} items visible)")
-
-        # If unclear, use AI verification
-        if os.environ.get('GEMINI_API_KEY'):
-            return await self._verify_with_ai(expected, "search results")
-
-        # Default to success if we can't verify
-        return (True, "Search completed")
-
-    async def _verify_form_submission(self, expected: str) -> tuple[bool, str]:
-        """Verify that form submission succeeded."""
-        # Wait a moment for any redirects or success messages
-        await self.page.wait_for_timeout(1000)
-
-        success_info = await self.page.evaluate("""() => {
-            // Look for success indicators
-            const successSelectors = [
-                '[role="status"]',
-                '.success', '.confirmation', '[class*="success"]',
-                '[class*="confirm"]', '[class*="thank"]',
-                '.alert-success'
-            ];
-
-            for (const sel of successSelectors) {
-                const el = document.querySelector(sel);
-                if (el && el.textContent.trim()) {
-                    return {
-                        found: true,
-                        message: el.textContent.trim().substring(0, 200)
-                    };
-                }
-            }
-
-            // Check for error messages
-            const errorSelectors = [
-                '[role="alert"]',
-                '.error', '[class*="error"]',
-                '.invalid', '[class*="invalid"]',
-                '.alert-danger'
-            ];
-
-            for (const sel of errorSelectors) {
-                const el = document.querySelector(sel);
-                if (el && el.textContent.trim()) {
-                    return {
-                        found: false,
-                        message: el.textContent.trim().substring(0, 200)
-                    };
-                }
-            }
-
-            // Check if still on same form page
-            const forms = document.querySelectorAll('form');
-            return {
-                found: null,
-                hasForm: forms.length > 0
-            };
-        }""")
-
-        if success_info.get('found') is True:
-            return (True, f"Form submitted successfully: {success_info.get('message', '')}")
-
-        if success_info.get('found') is False:
-            return (False, f"Form submission failed: {success_info.get('message', '')}")
-
-        # If unclear and we have AI, use it
-        if os.environ.get('GEMINI_API_KEY'):
-            return await self._verify_with_ai(expected, "form submission")
-
-        # Default to success if unclear
-        return (True, "Form submitted")
-
-    async def _verify_content_loaded(self, expected: str) -> tuple[bool, str]:
-        """Verify that content loaded on the page."""
-        # Check if page has meaningful content
-        content_info = await self.page.evaluate("""() => {
-            const bodyText = document.body.innerText || '';
-            const wordCount = bodyText.split(/\s+/).length;
-            const hasImages = document.querySelectorAll('img').length > 0;
-            const hasLinks = document.querySelectorAll('a').length > 0;
-
-            return {
-                wordCount,
-                hasImages,
-                hasLinks,
-                hasContent: wordCount > 50
-            };
-        }""")
-
-        if content_info.get('hasContent'):
-            return (True, f"Content loaded ({content_info.get('wordCount', 0)} words)")
-
-        return (False, "Page appears empty")
-
-    async def _verify_with_ai(self, expected: str, context: str) -> tuple[bool, str]:
-        """Use Gemini vision to verify action outcome."""
-        api_key = os.environ.get('GEMINI_API_KEY')
-        if not api_key:
-            return (True, "Verification skipped (no AI key)")
-
+    def _emit(self, event_type: str, data: dict):
         try:
-            import asyncio
-            import google.generativeai as genai
-
-            genai.configure(api_key=api_key)
-            # Use Flash for cost efficiency - vision is available in Flash
-            model = genai.GenerativeModel(
-                'gemini-2.0-flash',
-                generation_config={"temperature": 0.0},
-            )
-
-            # Capture screenshot
-            screenshot = await self.page.screenshot(full_page=False, type="png")
-            screenshot_b64 = base64.b64encode(screenshot).decode()
-
-            prompt = f"""You are a QA engineer verifying a {context} action.
-
-EXPECTED OUTCOME: {expected}
-
-CURRENT PAGE URL: {self.page.url}
-
-Look at the screenshot and answer:
-
-1. Did the expected outcome occur?
-2. What evidence supports your answer?
-3. Are there any error messages visible?
-
-Respond in this exact JSON format:
-{{
-  "success": true/false,
-  "reason": "Brief explanation (1-2 sentences)",
-  "evidence": "What you see in the screenshot"
-}}
-"""
-
-            def _call():
-                resp = model.generate_content([
-                    {
-                        'mime_type': 'image/png',
-                        'data': screenshot_b64
-                    },
-                    prompt
-                ])
-                return resp.text if resp and resp.text else None
-
-            response_text = await asyncio.to_thread(_call)
-            if not response_text:
-                return (True, "AI verification inconclusive")
-
-            # Parse JSON response
-            import json
-            # Strip markdown if present
-            cleaned = response_text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split('\n', 1)[1].rsplit('\n', 1)[0]
-
-            result = json.loads(cleaned)
-            return (result.get('success', True), result.get('reason', 'AI verification'))
-
-        except Exception as e:
-            # AI failed, default to success (optimistic)
-            return (True, f"Verification inconclusive (AI error)")
-
-        return (True, "AI verification completed")
-
-    async def _ai_find_element(self, target_description: str) -> tuple[object | None, bool]:
-        """AI fallback for element finding. Returns (element, ai_used)."""
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            return None, False
-
-        try:
-            import asyncio
-            import google.generativeai as genai
-
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(
-                os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
-                generation_config={"temperature": 0.0},
-            )
-
-            elements = await self.page.evaluate(_EXTRACT_INTERACTIVE_JS)
-            if not elements:
-                return None, False
-
-            elements_str = "\n".join(
-                f"{e['i']}: {e['tag']} - {e['text'][:50]}" for e in elements
-            )
-
-            prompt = f"""On this page, I need to click or interact with: "{target_description}".
-
-Interactive elements (index, tag, text):
-{elements_str}
-
-Which element index should I interact with? Reply with ONLY the number (0-based index), nothing else."""
-
-            def _call():
-                resp = model.generate_content(prompt)
-                return resp.text.strip() if resp and resp.text else None
-
-            text = await asyncio.to_thread(_call)
-            if text is None:
-                return None, False
-
-            idx = int("".join(c for c in text if c.isdigit()) or "0")
-            if 0 <= idx < len(elements):
-                sel = f'a[href], button, input:not([type=hidden]), select, textarea, [role="button"], [role="link"], [onclick]'
-                els = await self.page.query_selector_all(sel)
-                if idx < len(els):
-                    return els[idx], True
+            self._on_progress(event_type, data)
         except Exception:
             pass
-
-        return None, False
