@@ -319,6 +319,50 @@ If the page looks fine, respond: {{"issues": [], "overall_quality": "good"}}"""
             return result.get("issues", [])
         return []
 
+    async def plan_page_tests(
+        self, page: Page, elements_summary: str, already_tested: list[str],
+        site_type: str, auth_state: str,
+    ) -> list[dict]:
+        """AI sees a page and decides what flows to test. The core brain.
+
+        Returns list of candidate flows:
+        [{"name": "...", "priority": 1-10, "type": "search|form|nav|cta|menu",
+          "element_index": int, "reasoning": "..."}]
+        """
+        result = await self._call([
+            f"""You are a senior QA engineer visiting a page. Decide what to test.
+
+URL: {page.url}
+Page title: {await page.title()}
+Site type: {site_type}
+Auth state: {auth_state}
+Already tested on this site: {already_tested[:20]}
+
+Interactive elements on this page:
+{elements_summary}
+
+For each testable interaction, return:
+- name: descriptive ("Search for products", "Submit contact form", "Navigate to pricing")
+- priority: 1-10 (10 = most critical). Search/login/forms = 8-10. Nav = 5-7. Footer = 1-3.
+- type: search | form | nav | cta | menu
+- element_index: which element number to interact with
+- reasoning: 1 sentence why this matters for QA
+
+RULES:
+- Focus on HIGH VALUE tests: search, forms, login, primary CTAs, main navigation
+- SKIP low-value: footer links, privacy/terms, cookie settings, language selectors
+- Max 6 tests per page. Quality over quantity.
+- If a search box exists, ALWAYS test it (priority 10)
+- If a form exists (not login), ALWAYS test it (priority 9)
+- Don't suggest tests that are in the "already tested" list
+
+Respond JSON: {{"flows": [...]}}"""
+        ])
+
+        if isinstance(result, dict) and "flows" in result:
+            return result["flows"]
+        return []
+
     async def decide_recovery_action(self, page: Page, error_description: str, flow_context: str) -> dict | None:
         """AI decides how to recover from an unexpected state."""
         result = await self._call([

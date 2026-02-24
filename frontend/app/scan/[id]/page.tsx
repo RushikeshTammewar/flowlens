@@ -168,9 +168,18 @@ export default function ScanResultPage() {
   const [liveEdges, setLiveEdges] = useState<Array<{ from: string; to: string }>>([]);
   const [liveFlowSteps, setLiveFlowSteps] = useState<LiveFlowStep[]>([]);
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
-  const [counters, setCounters] = useState({ pages: 0, elements: 0, bugs: 0, actions: 0, flows: 0 });
+  const [counters, setCounters] = useState({ pages: 0, elements: 0, bugs: 0, actions: 0, flows: 0, flowsPassed: 0 });
   const logIdRef = useRef(0);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Agent journey: flows grouped by page
+  const [pageJourney, setPageJourney] = useState<Array<{
+    url: string; title: string; flows: Array<{
+      name: string; status: string; duration_ms: number; reasoning: string;
+      action: string; target: string;
+    }>;
+  }>>([]);
+  const [currentPage, setCurrentPage] = useState<string>("");
 
   const [authRequired, setAuthRequired] = useState(false);
   const [authLoginUrl, setAuthLoginUrl] = useState("");
@@ -197,6 +206,11 @@ export default function ScanResultPage() {
       const d = JSON.parse(e.data);
       setLiveNodes(prev => { const next = new Map(prev); const n = next.get(d.url); if (n) n.status = "visiting"; return next; });
       setCounters(c => ({ ...c, pages: d.page_number ?? c.pages }));
+      setCurrentPage(d.url || "");
+      setPageJourney(prev => {
+        if (prev.some(p => p.url === d.url)) return prev;
+        return [...prev, { url: d.url || "", title: "", flows: [] }];
+      });
       addLog(`Visiting ${shortUrl(d.url)}`, "info");
     });
     es.addEventListener("elements_found", (e) => {
@@ -225,13 +239,23 @@ export default function ScanResultPage() {
     es.addEventListener("flow_step", (e) => {
       const d = JSON.parse(e.data);
       setLiveFlowSteps(prev => [...prev, { flow: d.flow, stepIndex: d.step_index, action: d.step_action, target: d.step_target, status: "running" }]);
-      addLog(`Flow "${d.flow}" → ${d.step_action}: ${d.step_target}`, "flow");
     });
     es.addEventListener("flow_complete", (e) => {
       const d = JSON.parse(e.data);
-      setCounters(c => ({ ...c, flows: c.flows + 1 }));
-      const icon = d.status === "passed" ? "✓" : d.status === "failed" ? "✗" : "~";
-      addLog(`${icon} Flow "${d.flow}" ${d.status.toUpperCase()} (${d.duration_ms}ms)`, "flow");
+      const passed = d.status === "passed";
+      setCounters(c => ({ ...c, flows: c.flows + 1, flowsPassed: c.flowsPassed + (passed ? 1 : 0) }));
+      setPageJourney(prev => {
+        const pageUrl = d.page || currentPage;
+        return prev.map(p => p.url === pageUrl ? {
+          ...p,
+          flows: [...p.flows, {
+            name: d.flow || "", status: d.status || "", duration_ms: d.duration_ms || 0,
+            reasoning: d.reasoning || "", action: d.step_action || "", target: d.step_target || "",
+          }],
+        } : p);
+      });
+      const icon = passed ? "PASS" : "FAIL";
+      addLog(`${icon}: ${d.flow} (${d.duration_ms}ms)`, "flow");
     });
     es.addEventListener("flow_error", (e) => {
       const d = JSON.parse(e.data);
@@ -310,7 +334,7 @@ export default function ScanResultPage() {
       <main style={{ maxWidth: 960, margin: "0 auto", padding: "0 24px" }}>
         {!data ? <Loading /> :
           data.status === "failed" ? <Failed url={data.url} error={data.errors?.[0]} /> :
-          isRunning ? <LiveView url={data.url} nodes={liveNodes} edges={liveEdges} flowSteps={liveFlowSteps} log={logEntries} counters={counters} /> :
+          isRunning ? <LiveView url={data.url} nodes={liveNodes} edges={liveEdges} flowSteps={liveFlowSteps} log={logEntries} counters={counters} journey={pageJourney} /> :
           <Report data={data} />
         }
       </main>
@@ -346,68 +370,96 @@ export default function ScanResultPage() {
    LIVE SCAN VIEW
    ═══════════════════════════════════════════════════════════ */
 
-function LiveView({ url, nodes, edges, flowSteps, log, counters }: {
+function LiveView({ url, nodes, edges, flowSteps, log, counters, journey }: {
   url: string; nodes: Map<string, LiveNode>; edges: Array<{ from: string; to: string }>;
   flowSteps: LiveFlowStep[]; log: LogEntry[];
-  counters: { pages: number; elements: number; bugs: number; actions: number; flows: number };
+  counters: { pages: number; elements: number; bugs: number; actions: number; flows: number; flowsPassed: number };
+  journey: Array<{ url: string; title: string; flows: Array<{ name: string; status: string; duration_ms: number; reasoning: string; action: string; target: string }> }>;
 }) {
-  const logRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [log]);
-  const nodeArray = Array.from(nodes.values());
+  const journeyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (journeyRef.current) journeyRef.current.scrollTop = journeyRef.current.scrollHeight; }, [journey]);
 
   return (
     <div style={{ padding: "48px 0 80px" }}>
-      <Label>Live Scan</Label>
+      <Label>QA Agent</Label>
       <h1 style={{ fontFamily: "'Instrument Serif', serif", fontSize: 32, fontWeight: 400, marginBottom: 6, letterSpacing: "-0.02em" }}>{shortUrl(url)}</h1>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 40 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 36 }}>
         <span style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, animation: "pulse 1.5s infinite" }} />
-        <span style={{ fontSize: 11, color: T.accent, letterSpacing: "0.08em" }}>SCANNING</span>
+        <span style={{ fontSize: 11, color: T.accent, letterSpacing: "0.08em" }}>TESTING</span>
       </div>
 
       {/* Counters */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 1, background: T.border, borderRadius: T.radius, overflow: "hidden", marginBottom: 32 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: T.border, borderRadius: T.radius, overflow: "hidden", marginBottom: 36 }}>
         {([
           { label: "Pages", value: counters.pages, color: T.text },
-          { label: "Elements", value: counters.elements, color: T.textSecondary },
-          { label: "Actions", value: counters.actions, color: T.textSecondary },
-          { label: "Flows", value: counters.flows, color: T.blue },
+          { label: "Flows", value: `${counters.flowsPassed}/${counters.flows}`, color: counters.flows > 0 ? (counters.flowsPassed === counters.flows ? T.accent : T.text) : T.textMuted, sub: "passed" },
           { label: "Bugs", value: counters.bugs, color: counters.bugs > 0 ? T.red : T.accent },
+          { label: "Elements", value: counters.elements, color: T.textSecondary },
         ]).map(c => (
           <div key={c.label} style={{ background: T.card, padding: "20px 16px", textAlign: "center" }}>
-            <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: 32, color: c.color, lineHeight: 1 }}>{c.value}</div>
+            <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: 30, color: c.color, lineHeight: 1 }}>{c.value}</div>
             <div style={{ fontSize: 10, color: T.textMuted, letterSpacing: "0.08em", marginTop: 6 }}>{c.label.toUpperCase()}</div>
           </div>
         ))}
       </div>
 
-      {/* Live flow execution */}
-      {flowSteps.length > 0 && (
-        <div style={{ marginBottom: 32 }}>
-          <Label>Flow Execution</Label>
-          <LiveFlowTimeline steps={flowSteps} />
-        </div>
-      )}
+      {/* Agent Journey -- the main view */}
+      <Label style={{ marginBottom: 16 }}>Agent Journey</Label>
+      <div ref={journeyRef} style={{ display: "flex", flexDirection: "column", gap: 12, maxHeight: 600, overflowY: "auto" }}>
+        {journey.length === 0 && (
+          <Card style={{ padding: "40px 24px", textAlign: "center" }}>
+            <div style={{ width: 24, height: 24, border: `2px solid ${T.border}`, borderTopColor: T.accent, borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 12px" }} />
+            <p style={{ color: T.textMuted, fontSize: 12 }}>Agent is navigating...</p>
+          </Card>
+        )}
 
-      {/* Graph + Log side by side */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 20, alignItems: "start" }}>
-        <Card>
-          <Label style={{ marginBottom: 16 }}>Site Graph · {nodeArray.length} pages</Label>
-          <LiveGraph nodes={nodeArray} />
-        </Card>
-        <Card style={{ display: "flex", flexDirection: "column", maxHeight: 460 }}>
-          <Label style={{ padding: "0 0 12px", borderBottom: `1px solid ${T.borderSubtle}` }}>Activity</Label>
-          <div ref={logRef} style={{ flex: 1, overflowY: "auto", paddingTop: 8 }}>
-            <AnimatePresence>
-              {log.map(entry => (
-                <motion.div key={entry.id} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
-                  style={{ padding: "4px 0", fontSize: 11, display: "flex", gap: 8, alignItems: "flex-start" }}>
-                  <span style={{ color: logColor(entry.type), flexShrink: 0, width: 12, textAlign: "center" }}>{logIcon(entry.type)}</span>
-                  <span style={{ color: entry.type === "bug" ? T.red : entry.type === "flow" ? T.blue : T.textSecondary, lineHeight: 1.5 }}>{entry.text}</span>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </div>
-        </Card>
+        <AnimatePresence>
+          {journey.map((pg, pi) => (
+            <motion.div key={pg.url} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+              <Card>
+                {/* Page header */}
+                <div style={{ padding: "14px 20px", display: "flex", alignItems: "center", gap: 10, borderBottom: pg.flows.length > 0 ? `1px solid ${T.borderSubtle}` : "none" }}>
+                  <span style={{ color: T.blue, fontSize: 13, fontWeight: 600 }}>→</span>
+                  <span style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>{shortUrl(pg.url)}</span>
+                  {pg.flows.length > 0 && (
+                    <span style={{ marginLeft: "auto", fontSize: 10, color: T.textMuted }}>
+                      {pg.flows.filter(f => f.status === "passed").length}/{pg.flows.length} passed
+                    </span>
+                  )}
+                  {pg.flows.length === 0 && pi === journey.length - 1 && (
+                    <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 5, height: 5, borderRadius: "50%", background: T.accent, animation: "pulse 1.5s infinite" }} />
+                      <span style={{ fontSize: 10, color: T.accent }}>testing...</span>
+                    </span>
+                  )}
+                </div>
+
+                {/* Flow results for this page */}
+                {pg.flows.length > 0 && (
+                  <div style={{ padding: "8px 20px 12px" }}>
+                    {pg.flows.map((fl, fi) => {
+                      const passed = fl.status === "passed";
+                      const color = passed ? T.accent : fl.status === "failed" ? T.red : T.yellow;
+                      return (
+                        <motion.div key={fi} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
+                          style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: fi < pg.flows.length - 1 ? `1px solid ${T.borderSubtle}` : "none" }}>
+                          <span style={{
+                            width: 18, height: 18, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                            fontSize: 10, fontWeight: 600, background: `${color}18`, color,
+                          }}>
+                            {passed ? "✓" : "✗"}
+                          </span>
+                          <span style={{ fontSize: 12, color: T.text, flex: 1 }}>{fl.name}</span>
+                          <span style={{ fontSize: 10, color: T.textMuted }}>{fl.duration_ms}ms</span>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                )}
+              </Card>
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     </div>
   );
