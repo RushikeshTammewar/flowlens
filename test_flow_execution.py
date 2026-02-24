@@ -9,7 +9,9 @@ sys.path.insert(0, '/Users/rtammewar/personal-workspace/flowlens')
 from agent.core.scanner import FlowLensScanner
 
 # Set API key
-os.environ['GEMINI_API_KEY'] = 'AIzaSyAAVmOZKgAAf2dqfATPq1261awK-Wt940I'
+if not os.environ.get('GEMINI_API_KEY'):
+    print("Set GEMINI_API_KEY env var to enable AI features")
+    print("  export GEMINI_API_KEY=your-key-here")
 
 
 async def test_wikipedia():
