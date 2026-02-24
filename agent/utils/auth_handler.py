@@ -132,17 +132,17 @@ class AuthHandler:
         if self._cached_cookies:
             return await self._inject_cached_cookies(page)
 
-        # No playwright instance means we're running from the API server (no display)
+        # No playwright instance = server mode (no display) or headless-only mode
         if not self._pw:
             self._on_progress("auth_required", {
                 "url": page_url,
                 "title": login_info.get("title", ""),
-                "message": "Login detected but headful browser not available. Run CLI scanner for interactive login.",
+                "message": "Login detected. Use CLI with --headful for interactive login.",
             })
             return AuthResult(
                 success=False,
                 method="skipped",
-                message="Headful browser not available (server mode). Use CLI for interactive login.",
+                message=f"Login detected at {_short_url(page_url)}. Auth-gated flows will be skipped. Use CLI with --headful for interactive login.",
                 url_after=page.url,
             )
 

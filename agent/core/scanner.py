@@ -75,20 +75,33 @@ class FlowLensScanner:
                 # Phase B + C: Flow identification and execution (desktop only)
                 if viewport_name == "desktop" and self._graph and len(self._graph.nodes) > 0:
                     try:
+                        if self._on_progress:
+                            self._on_progress("flow_identification_start", {"pages": len(self._graph.nodes)})
+
                         flows = await identify_flows(self._graph)
+
+                        if self._on_progress:
+                            self._on_progress("flows_identified", {
+                                "count": len(flows),
+                                "flows": [f.name for f in flows],
+                            })
+
                         if flows:
                             runner = FlowRunner(
                                 page=page,
                                 root_url=self.url,
                                 graph=self._graph,
                                 on_progress=self._on_progress,
-                                playwright_instance=pw,
+                                playwright_instance=pw if self._headful else None,
                                 browser_context=ctx,
                             )
                             flow_results = await runner.execute_flows(flows)
                             self.result.flows = flow_results
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        error_msg = f"Flow execution error: {str(e)[:300]}"
+                        self.result.errors.append(error_msg)
+                        if self._on_progress:
+                            self._on_progress("flow_error", {"error": error_msg})
 
                 # Extract results from graph nodes
                 for node in graph.nodes.values():

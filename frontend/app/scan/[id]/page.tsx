@@ -213,6 +213,10 @@ export default function ScanResultPage() {
       const d = JSON.parse(e.data);
       setLiveNodes(prev => { const next = new Map(prev); const n = next.get(d.url); if (n) n.status = d.status === "failed" ? "failed" : "visited"; return next; });
     });
+    es.addEventListener("flows_identified", (e) => {
+      const d = JSON.parse(e.data);
+      addLog(`Identified ${d.count} flows: ${(d.flows || []).join(", ")}`, "flow");
+    });
     es.addEventListener("flow_step", (e) => {
       const d = JSON.parse(e.data);
       setLiveFlowSteps(prev => [...prev, { flow: d.flow, stepIndex: d.step_index, action: d.step_action, target: d.step_target, status: "running" }]);
@@ -224,9 +228,17 @@ export default function ScanResultPage() {
       const icon = d.status === "passed" ? "✓" : d.status === "failed" ? "✗" : "~";
       addLog(`${icon} Flow "${d.flow}" ${d.status.toUpperCase()} (${d.duration_ms}ms)`, "flow");
     });
+    es.addEventListener("flow_error", (e) => {
+      const d = JSON.parse(e.data);
+      addLog(`Flow error: ${d.error}`, "bug");
+    });
+    es.addEventListener("auth_required", (e) => {
+      const d = JSON.parse(e.data);
+      addLog(`Login detected at ${d.url?.substring(0, 60) || "unknown"}. Use CLI with --headful for interactive login.`, "auth");
+    });
     es.addEventListener("auth_attempted", (e) => {
       const d = JSON.parse(e.data);
-      addLog(`Auth: ${d.success ? "SUCCESS" : "FAILED"} — ${d.message}`, "auth");
+      addLog(`Auth ${d.method}: ${d.success ? "SUCCESS" : "FAILED"} — ${d.message}`, "auth");
     });
     es.addEventListener("popup_dismissed", (e) => {
       const d = JSON.parse(e.data);
