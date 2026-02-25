@@ -29,6 +29,7 @@ class SiteContext:
     site_type: str = ""
     target_user: str = ""
     core_product: str = ""
+    critical_flow: str = ""
     main_features: list[str] = field(default_factory=list)
     critical_paths: list[str] = field(default_factory=list)
     requires_auth_for: list[str] = field(default_factory=list)
@@ -151,19 +152,24 @@ Title: {await page.title()}
 1. site_type: What kind of site is this? (saas, ecommerce, news, blog, docs, social, qa_forum, portfolio, corporate, other)
 2. target_user: Who uses this site? (1 sentence)
 3. core_product: What is the ONE main thing users come here to do? (e.g. "search and read Q&A", "buy products", "read news articles", "manage projects")
-4. main_features: What are the 3-5 most important features visible? Start with the CORE feature. (list)
-5. critical_paths: What are the 2-3 most critical user journeys a QA engineer MUST test? These should be about the core product, NOT about footer links or legal pages. (list)
-5. requires_auth: What features seem to require login? (list)
-6. public_testable: What can be tested WITHOUT logging in? (list)
+4. critical_flow: The SINGLE MOST IMPORTANT user action on this site. What MUST work or the site is useless?
+   Describe it as step-by-step browser actions a human would take:
+   e.g. for a search site: "type 'machine learning' into the search input, click search button, verify results appear"
+   e.g. for a scan tool: "type 'youtube.com' into the URL input, click the scan/submit button, verify redirect to results page"
+   e.g. for ecommerce: "search for 'laptop', click first product, verify product page loads with price"
+5. main_features: What are the 3-5 most important features visible? (list)
+6. requires_auth: What features seem to require login? (list)
+7. public_testable: What can be tested WITHOUT logging in? (list)
 
 Respond in JSON:
-{{"site_type": "...", "target_user": "...", "core_product": "...", "main_features": [...], "critical_paths": [...], "requires_auth": [...], "public_testable": [...]}}""")
+{{"site_type": "...", "target_user": "...", "core_product": "...", "critical_flow": "step by step description of the most important user action", "main_features": [...], "requires_auth": [...], "public_testable": [...]}}""")
 
         result = await self._call(parts)
         if isinstance(result, dict) and "site_type" in result:
             self.site_context.site_type = result.get("site_type", "unknown")
             self.site_context.target_user = result.get("target_user", "")
             self.site_context.core_product = result.get("core_product", "")
+            self.site_context.critical_flow = result.get("critical_flow", "")
             self.site_context.main_features = result.get("main_features", [])
             self.site_context.critical_paths = result.get("critical_paths", [])
             self.site_context.requires_auth_for = result.get("requires_auth", [])
@@ -212,10 +218,10 @@ Respond in JSON:
         self, page: Page, elements_summary: str,
         page_assessment: dict, already_tested: list[str],
     ) -> list[dict]:
-        """Plan multi-step user journeys to test on this page.
+        """Plan test journeys with low-level browser commands.
 
-        Returns list of journeys, each with multiple steps:
-        [{name, priority, requires_auth, steps: [{action, element_index, target, query, verify}]}]
+        Returns journeys with direct browser actions (type/click/wait),
+        not abstract categories (fill_form/search/nav).
         """
         testable = page_assessment.get("testable_features", [])
         disabled = page_assessment.get("disabled_elements", [])
@@ -225,57 +231,68 @@ Respond in JSON:
         if shot:
             parts.append({"mime_type": "image/png", "data": shot})
 
-        parts.append(f"""You are a senior QA engineer planning test journeys.
+        critical_flow_instruction = ""
+        if self.site_context.critical_flow and "critical_flow" not in str(already_tested):
+            critical_flow_instruction = f"""
+MANDATORY FIRST JOURNEY:
+The site's critical flow is: "{self.site_context.critical_flow}"
+Your FIRST journey MUST test this. Plan exact browser actions to execute it.
+This is priority 10. If this fails, the site is fundamentally broken.
+"""
+
+        parts.append(f"""You are a senior QA engineer. Plan test journeys using DIRECT BROWSER ACTIONS.
 
 {self.site_context.summary()}
 
 Current page: {page.url} — {page_assessment.get('page_purpose', '')}
 Auth: {self.site_context.auth_state}
-Testable without auth: {testable}
-Disabled elements (DO NOT interact with): {disabled}
+Disabled elements (DO NOT interact): {disabled}
 Already tested: {already_tested[:15]}
-
+{critical_flow_instruction}
 Elements on page:
 {elements_summary}
 
-Plan 2-4 USER JOURNEYS. Think like a senior QA engineer: what are the MOST IMPORTANT things a real user does on this site?
+Plan 2-4 journeys. Each journey uses LOW-LEVEL BROWSER ACTIONS:
 
-PRIORITY ORDER (test these FIRST):
-1. SEARCH — if there's a search box, this is ALWAYS the #1 test. Type a realistic query, verify results load, click a result.
-2. CORE PRODUCT FEATURE — the main thing users come to this site for:
-   - Q&A site (Quora) → search questions, read answers
-   - E-commerce → search products, view product details
-   - News → read articles, browse categories
-   - SaaS → try the main feature, check pricing
-   - Docs → search docs, read a guide
-3. FORMS — signup forms, contact forms, newsletter signup. Fill and submit.
-4. NAVIGATION — main menu links, category browsing. Click through and verify.
-5. NEVER test footer links, legal pages, privacy policies, or language selectors as primary journeys. Those are the LOWEST priority.
+AVAILABLE ACTIONS:
+- "type": Type text into an element. Needs: selector (CSS selector), value (text to type)
+- "click": Click an element. Needs: selector (CSS selector) OR element_index (from element list)
+- "press_key": Press a key. Needs: key (e.g. "Enter", "Tab")
+- "wait": Wait for something. Needs: condition ("url_changes", "content_loads", "element_appears")
+- "verify": Check the page state. Needs: check (what to verify)
 
-A journey has 2-4 STEPS (not just one click!):
-- "Search and explore" = type query → check results → click a result → verify detail page
-- "Test core feature" = interact with main feature → verify it works → check the output
-- "Fill and submit form" = fill fields → submit → verify success/error message
+DO NOT use abstract actions like "fill_form" or "search". Use type + click + wait instead.
+
+EXAMPLE for a site with a URL input + scan button:
+{{"name": "Test core scan feature", "priority": 10, "requires_auth": false,
+  "steps": [
+    {{"action": "type", "selector": "input[type=text], input[type=url], input[placeholder]", "value": "youtube.com", "describe": "Enter URL in scan input"}},
+    {{"action": "click", "selector": "button", "text_contains": "scan", "describe": "Click scan button"}},
+    {{"action": "wait", "condition": "url_changes", "describe": "Wait for redirect to results"}},
+    {{"action": "verify", "check": "page shows scan results or loading state", "describe": "Verify scan started"}}
+  ]
+}}
+
+EXAMPLE for a site with search:
+{{"name": "Search and explore", "priority": 10, "requires_auth": false,
+  "steps": [
+    {{"action": "type", "selector": "input[name=q], input[type=search], [role=search] input", "value": "machine learning", "describe": "Type search query"}},
+    {{"action": "press_key", "key": "Enter", "describe": "Submit search"}},
+    {{"action": "wait", "condition": "content_loads", "describe": "Wait for results"}},
+    {{"action": "verify", "check": "search results are displayed", "describe": "Verify results appear"}}
+  ]
+}}
 
 RULES:
-- Each step has: action (search/click/fill_form/verify), element_index, verify (what to check)
-- For search steps, include a "query" field with a realistic search term for THIS SPECIFIC SITE
-- DO NOT plan journeys for auth-required features if we're not logged in
-- DO NOT interact with disabled elements (indices: {disabled})
-- A journey testing footer links or Terms of Service is WORTHLESS — don't suggest it
-- Focus on what a REAL USER would actually DO on this site
+- Use CSS selectors that MATCH elements in the element list above
+- If you can't find an exact selector, use element_index from the list
+- For buttons: use text_contains to match button text (case insensitive)
+- DO NOT interact with disabled elements
+- NEVER test footer links, legal pages, language selectors
+- The first journey MUST be the most critical user action on this site
 
 Respond JSON:
-{{"journeys": [
-  {{"name": "...", "priority": 1-10, "requires_auth": false,
-    "steps": [
-      {{"action": "search", "element_index": 3, "query": "laptop", "verify": "results page loads with items"}},
-      {{"action": "click", "target": "first result", "verify": "detail page with content"}},
-      {{"action": "verify", "target": "page quality", "verify": "has title, images, description"}}
-    ]
-  }}
-],
-"auth_blocked_features": ["list of features that need login"]
+{{"journeys": [...], "auth_blocked_features": [...]
 }}""")
 
         result = await self._call(parts)
@@ -468,6 +485,41 @@ If the page looks fine: {{"issues": [], "quality": "good"}}""",
         if isinstance(result, dict):
             return result.get("issues", [])
         return []
+
+    async def investigate_failure(self, page: Page, flow_name: str, error: str) -> dict | None:
+        """When the critical flow fails, investigate WHY and suggest a retry approach."""
+        shot = await self._screenshot_b64(page)
+        parts = []
+        if shot:
+            parts.append({"mime_type": "image/png", "data": shot})
+
+        # Also check console errors
+        console_errors = await page.evaluate("""() => {
+            return window.__flowlens_console_errors || [];
+        }""") if True else []
+
+        parts.append(f"""The site's CRITICAL FLOW just failed. This is a serious issue.
+
+Flow: {flow_name}
+Error: {error}
+URL: {page.url}
+Console errors: {str(console_errors)[:500] if console_errors else "none"}
+
+Look at the screenshot and investigate:
+1. WHY did it fail? What went wrong?
+2. Is there an ALTERNATIVE way to accomplish the same action?
+3. Should we retry with a different approach?
+
+Possible causes:
+- Button was outside a form tag (try clicking directly)
+- Element selector was wrong (try a different selector)
+- Page requires interaction first (dismiss popup, accept cookies)
+- Element was dynamically loaded (need to wait longer)
+
+Respond JSON:
+{{"cause": "why it failed", "severity": "P0|P1|P2", "retry_steps": [{{"action": "...", "selector": "...", "value": "..."}}], "is_bug": true/false, "bug_description": "if it's a real bug, describe it"}}""")
+
+        return await self._call(parts)
 
     async def decide_recovery(self, page: Page, error: str, context: str) -> dict | None:
         """AI decides how to recover from an error."""

@@ -123,6 +123,7 @@ class QAAgent:
         self._responsive = ResponsiveDetector()
         self._state = AgentState()
         self._state.graph = SiteGraph(root_url=self.base_url)
+        self._current_step: dict | None = None
 
     async def run(self, page: Page, viewport: str = "desktop") -> AgentState:
         self._functional.attach_listeners(page)
@@ -276,6 +277,37 @@ class QAAgent:
 
             flow_result = await self._execute_journey(page, node, journey, elements, viewport)
             if flow_result:
+                # If the critical flow (priority >= 9) failed, investigate and retry
+                if flow_result.status == "failed" and journey.get("priority", 0) >= 9 and self._ai.available:
+                    self._emit("agent_thinking", {"thought": f"Critical flow '{flow_result.flow.name}' failed. Investigating...", "page": node.url})
+                    investigation = await self._ai.investigate_failure(
+                        page, flow_result.flow.name,
+                        flow_result.steps[-1].error if flow_result.steps else "unknown error",
+                    )
+                    if investigation and isinstance(investigation, dict):
+                        retry_steps = investigation.get("retry_steps", [])
+                        cause = investigation.get("cause", "unknown")
+                        self._emit("agent_thinking", {"thought": f"Cause: {cause}. Retrying with alternative approach...", "page": node.url})
+
+                        if retry_steps:
+                            # Navigate back and retry
+                            try:
+                                await page.goto(node.url, wait_until="domcontentloaded", timeout=15000)
+                                await wait_for_stable_page(page, timeout_ms=5000)
+                                elements = await self._discover_elements(page)
+                            except Exception:
+                                pass
+
+                            retry_journey = {
+                                "name": f"{journey.get('name', '')} (retry)",
+                                "priority": journey.get("priority", 9),
+                                "steps": retry_steps,
+                            }
+                            retry_result = await self._execute_journey(page, node, retry_journey, elements, viewport)
+                            if retry_result and retry_result.status == "passed":
+                                flow_result = retry_result
+                                self._emit("agent_thinking", {"thought": f"Retry PASSED!", "page": node.url})
+
                 self._state.completed_flows.append(flow_result)
                 self._state.total_actions += len(flow_result.steps)
                 self._ai.site_context.journeys_completed.append({
@@ -324,13 +356,17 @@ class QAAgent:
         for si, step in enumerate(steps):
             action = step.get("action", "click")
             el_idx = step.get("element_index", -1)
-            target = step.get("target", "")
-            query = step.get("query", "")
-            verify = step.get("verify", "action completed")
+            target = step.get("target", step.get("describe", ""))
+            query = step.get("query", step.get("value", ""))
+            verify = step.get("verify", step.get("check", "action completed"))
 
-            self._emit("flow_step", {"flow": name, "step_index": si, "step_action": action, "step_target": target or query or f"element[{el_idx}]", "page": page.url})
+            describe = step.get("describe", target or query or f"element[{el_idx}]")
+            self._emit("flow_step", {"flow": name, "step_index": si, "step_action": action, "step_target": describe, "page": page.url})
+            self._emit("agent_thinking", {"thought": f"Step {si+1}: {action} — {describe}", "page": page.url})
 
+            self._current_step = step
             step_result = await self._execute_step(page, action, el_idx, target, query, verify, elements, node)
+            self._current_step = None
             step_results.append(step_result)
 
             # If step failed or blocked, stop this journey
@@ -374,156 +410,126 @@ class QAAgent:
         )
 
     async def _execute_step(self, page: Page, action: str, el_idx: int, target: str, query: str, verify: str, elements: list[PageElement], node: SiteNode) -> FlowStepResult:
-        """Execute one step of a journey with proper disabled checks and nuanced verification."""
+        """Execute one step using low-level browser commands.
+
+        Actions: type, click, press_key, wait, verify, search, nav, fill_form (legacy)
+        """
+        step = self._current_step or {}
+        selector = step.get("selector", "")
+        value = step.get("value", "") or query
+        text_contains = step.get("text_contains", "")
+        describe = step.get("describe", target or action)
+        condition = step.get("condition", "")
+        check = step.get("check", verify)
+
         screenshot_b64 = None
         error = None
         status = "passed"
-        ai_method = "Heuristic"
+        ai_method = "AI-driven"
 
         try:
-            if action == "search":
-                el = None
-                # Find search input
-                if 0 <= el_idx < len(elements):
-                    el = await page.query_selector(elements[el_idx].selector)
+            # ── TYPE: type text into an element ──
+            if action == "type":
+                el = await self._find_el(page, selector, el_idx, elements, text_contains)
                 if not el:
-                    el = await find_element(page, "search")
-                if not el:
-                    return FlowStepResult(step=FlowStep("search", target or "search"), status="failed", error="Search input not found", ai_used="N/A")
-
-                # Check if interactable
+                    return _fail_step(action, describe, f"Input not found: {selector or target}")
                 if not await el.is_visible():
-                    return FlowStepResult(step=FlowStep("search", target), status="failed", error="Search input not visible", ai_used="N/A")
-                if await el.is_disabled():
-                    return FlowStepResult(step=FlowStep("search", target), status="blocked", error="Search input is disabled", ai_used="N/A")
-
-                # Get query
-                search_query = query
-                if not search_query and self._ai.available:
-                    search_query = await self._ai.decide_search_query(page)
-                    ai_method = "AI"
-                if not search_query:
-                    search_query = get_search_query(self._ai.site_context.site_type or "generic")
-
-                await el.fill(search_query)
-                await el.press("Enter")
-                await wait_for_stable_page(page, timeout_ms=8000)
-                target = f"search: '{search_query}'"
-
-            elif action == "click" or action == "nav":
-                el = None
-                if 0 <= el_idx < len(elements):
-                    el = await page.query_selector(elements[el_idx].selector)
-
-                # If on a new page (from previous step), use AI to find element
-                if not el and target and self._ai.available:
-                    decision = await self._ai.find_element_for_step(page, target)
-                    if decision and isinstance(decision, dict) and decision.get("index", -1) >= 0:
-                        sel = 'a[href], button, input:not([type=hidden]), [role="button"], [role="link"], summary'
-                        all_els = await page.query_selector_all(sel)
-                        idx = decision["index"]
-                        visible = [e for e in all_els if await e.is_visible()]
-                        if idx < len(visible):
-                            el = visible[idx]
-                            ai_method = "AI"
-
-                if not el and target:
-                    el = await find_element(page, target)
-
-                if not el:
-                    return FlowStepResult(step=FlowStep("click", target), status="failed", error=f"Element not found: {target}", ai_used=ai_method)
-                if not await el.is_visible():
-                    return FlowStepResult(step=FlowStep("click", target), status="failed", error="Element not visible", ai_used=ai_method)
+                    return _fail_step(action, describe, "Input not visible")
                 try:
-                    is_disabled = await el.is_disabled()
+                    if await el.is_disabled():
+                        return FlowStepResult(step=FlowStep(action, describe), status="blocked", error="Input is disabled", ai_used=ai_method)
                 except Exception:
-                    is_disabled = False
-                if is_disabled:
-                    return FlowStepResult(step=FlowStep("click", target), status="blocked", error="Element is disabled — cannot interact", ai_used=ai_method)
+                    pass
+                await el.fill(value)
+                await page.wait_for_timeout(300)
 
-                # For nav links, use goto instead of click (more reliable)
-                href = None
-                if 0 <= el_idx < len(elements) and elements[el_idx].href:
-                    href = elements[el_idx].href
-                if href and self._is_allowed(href):
-                    await page.goto(href, wait_until="domcontentloaded", timeout=15000)
-                else:
-                    await el.click()
+            # ── CLICK: click an element ──
+            elif action == "click":
+                el = await self._find_el(page, selector, el_idx, elements, text_contains)
+                if not el:
+                    return _fail_step(action, describe, f"Element not found: {selector or text_contains or target}")
+                if not await el.is_visible():
+                    return _fail_step(action, describe, "Element not visible")
+                try:
+                    if await el.is_disabled():
+                        return FlowStepResult(step=FlowStep(action, describe), status="blocked", error="Element is disabled", ai_used=ai_method)
+                except Exception:
+                    pass
+                await el.click()
                 await wait_for_stable_page(page, timeout_ms=6000)
 
-                # Add to graph if new page
-                if href and self._is_allowed(href):
-                    norm = self._normalize(href)
+                # Track new pages
+                current = page.url
+                if current != node.url and self._is_allowed(current):
+                    norm = self._normalize(current)
                     if norm not in self._state.graph.nodes:
                         self._state.graph.add_node(norm, depth=node.depth + 1)
                         self._state.graph.add_edge(node.url, norm)
                         heapq.heappush(self._state.page_queue, (-5, node.depth + 1, norm))
-                        self._emit("page_discovered", {"url": norm, "depth": node.depth + 1, "from": node.url, "via": target[:40]})
+                        self._emit("page_discovered", {"url": norm, "depth": node.depth + 1, "from": node.url, "via": describe[:40]})
 
-            elif action == "fill_form":
-                form_el = None
-                if 0 <= el_idx < len(elements):
-                    form_el = elements[el_idx]
-                if form_el:
-                    if self._ai.available:
-                        ai_fields = await self._ai.analyze_form(page, form_el.selector)
-                        if ai_fields:
-                            filled = 0
-                            for fi in ai_fields:
-                                try:
-                                    sel = fi.get("selector", "")
-                                    val = fi.get("value", "")
-                                    if not sel or not val:
-                                        continue
-                                    fel = await page.query_selector(sel)
-                                    if not fel or not await fel.is_visible():
-                                        continue
-                                    try:
-                                        if await fel.is_disabled():
-                                            continue
-                                    except Exception:
-                                        pass
-                                    act = fi.get("action", "fill")
-                                    if act == "select":
-                                        await fel.select_option(val)
-                                    elif act == "check":
-                                        if not await fel.is_checked():
-                                            await fel.check()
-                                    else:
-                                        await fel.fill(val)
-                                    filled += 1
-                                except Exception:
-                                    continue
-                            # Submit
-                            for sub_sel in [f"{form_el.selector} button[type=submit]", f"{form_el.selector} input[type=submit]", f"{form_el.selector} button:not([type])"]:
-                                try:
-                                    btn = await page.query_selector(sub_sel)
-                                    if btn and await btn.is_visible():
-                                        await btn.click()
-                                        break
-                                except Exception:
-                                    continue
-                            await wait_for_stable_page(page, timeout_ms=5000)
-                            ai_method = f"AI ({filled} fields)"
-                        else:
-                            await heuristic_fill_form(page, form_el.selector)
-                            await wait_for_stable_page(page, timeout_ms=3000)
-                    else:
-                        await heuristic_fill_form(page, form_el.selector)
-                        await wait_for_stable_page(page, timeout_ms=3000)
+            # ── PRESS_KEY: press a keyboard key ──
+            elif action == "press_key":
+                key = step.get("key", value or "Enter")
+                await page.keyboard.press(key)
+                await wait_for_stable_page(page, timeout_ms=6000)
+
+            # ── WAIT: wait for a condition ──
+            elif action == "wait":
+                cond = condition or value
+                if "url" in cond.lower():
+                    url_before = page.url
+                    for _ in range(10):
+                        await page.wait_for_timeout(1000)
+                        if page.url != url_before:
+                            break
+                elif "element" in cond.lower():
+                    await page.wait_for_timeout(3000)
                 else:
-                    return FlowStepResult(step=FlowStep("fill_form", target), status="failed", error="Form not found", ai_used="N/A")
+                    await wait_for_stable_page(page, timeout_ms=8000)
 
+            # ── VERIFY: just check the page state ──
             elif action == "verify":
-                pass  # Just verify, no action needed
+                pass
 
-            # Capture screenshot
+            # ── LEGACY: search (backward compat with heuristic fallback) ──
+            elif action == "search":
+                el = await self._find_el(page, selector, el_idx, elements, "")
+                if not el:
+                    el = await find_element(page, "search")
+                if not el:
+                    return _fail_step("search", describe, "Search input not found")
+                search_q = value or get_search_query(self._ai.site_context.site_type or "generic")
+                await el.fill(search_q)
+                await el.press("Enter")
+                await wait_for_stable_page(page, timeout_ms=8000)
+                describe = f"search: '{search_q}'"
+
+            # ── LEGACY: nav (backward compat) ──
+            elif action == "nav":
+                if 0 <= el_idx < len(elements) and elements[el_idx].href and self._is_allowed(elements[el_idx].href):
+                    await page.goto(elements[el_idx].href, wait_until="domcontentloaded", timeout=15000)
+                    await wait_for_stable_page(page, timeout_ms=6000)
+                else:
+                    el = await self._find_el(page, selector, el_idx, elements, text_contains)
+                    if el:
+                        await el.click()
+                        await wait_for_stable_page(page, timeout_ms=6000)
+
+            # ── LEGACY: fill_form (backward compat) ──
+            elif action == "fill_form":
+                if 0 <= el_idx < len(elements):
+                    await heuristic_fill_form(page, elements[el_idx].selector)
+                    await wait_for_stable_page(page, timeout_ms=3000)
+
+            # ── Screenshot ──
             screenshot_b64 = await _screenshot(page)
 
-            # Stage 5: Nuanced verification
-            if self._ai.available and verify:
-                self._emit("agent_thinking", {"thought": f"Verifying: {verify[:60]}", "page": page.url})
-                result = await self._ai.verify_step(page, f"{action}: {target or query}", verify)
+            # ── Verification ──
+            check_text = check or verify
+            if self._ai.available and check_text:
+                self._emit("agent_thinking", {"thought": f"Verifying: {check_text[:60]}", "page": page.url})
+                result = await self._ai.verify_step(page, f"{action}: {describe}", check_text)
                 status = result.get("status", "inconclusive")
                 error = result.get("reason", "")
                 issues = result.get("issues", [])
@@ -531,27 +537,75 @@ class QAAgent:
                     for issue in issues:
                         self._ai.site_context.key_findings.append(str(issue)[:100])
                 ai_method = "AI verified"
-            elif not verify:
+            elif not check_text:
                 status = "passed"
                 error = "Action completed"
 
         except Exception as e:
             err_str = str(e)[:200]
-            if "timeout" in err_str.lower() and "disabled" in err_str.lower():
+            if "disabled" in err_str.lower() or "not enabled" in err_str.lower():
                 status = "blocked"
                 error = f"Element not interactable: {err_str}"
             elif "timeout" in err_str.lower():
                 status = "failed"
-                error = f"Action timed out: {err_str}"
+                error = f"Timed out: {err_str}"
             else:
                 status = "failed"
                 error = err_str
 
         return FlowStepResult(
-            step=FlowStep(action, target or query or f"element[{el_idx}]", "", verify),
+            step=FlowStep(action, describe, "", check or verify),
             status=status, actual_url=page.url,
             screenshot_b64=screenshot_b64, error=error, ai_used=ai_method,
         )
+
+    async def _find_el(self, page, selector, el_idx, elements, text_contains):
+        """Find an element by selector, element_index, or text content."""
+        # Try CSS selector first
+        if selector:
+            for sel in selector.split(","):
+                sel = sel.strip()
+                if not sel:
+                    continue
+                try:
+                    el = await page.query_selector(sel)
+                    if el and await el.is_visible():
+                        return el
+                except Exception:
+                    pass
+
+        # Try element index from the list
+        if 0 <= el_idx < len(elements):
+            try:
+                el = await page.query_selector(elements[el_idx].selector)
+                if el and await el.is_visible():
+                    return el
+            except Exception:
+                pass
+
+        # Try text content match
+        if text_contains:
+            try:
+                locator = page.get_by_text(text_contains, exact=False).first
+                el = await locator.element_handle()
+                if el and await el.is_visible():
+                    return el
+            except Exception:
+                pass
+            # Try button with text
+            try:
+                buttons = await page.query_selector_all("button, [role=button], a, input[type=submit]")
+                for btn in buttons:
+                    try:
+                        txt = await btn.text_content() or ""
+                        if text_contains.lower() in txt.lower() and await btn.is_visible():
+                            return btn
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        return None
 
     def _heuristic_journeys(self, elements: list[PageElement], node: SiteNode) -> list[dict]:
         """Fallback: plan simple journeys without AI."""
