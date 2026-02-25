@@ -410,91 +410,65 @@ class QAAgent:
         )
 
     async def _execute_step(self, page: Page, action: str, el_idx: int, target: str, query: str, verify: str, elements: list[PageElement], node: SiteNode) -> FlowStepResult:
-        """Execute one step using low-level browser commands.
-
-        Actions: type, click, press_key, wait, verify, search, nav, fill_form (legacy)
+        """Execute one step. Element finding is DETERMINISTIC (from DOM discovery).
+        AI is only used for decisions (what to type, what to verify), never for selectors.
         """
         step = self._current_step or {}
-        selector = step.get("selector", "")
         value = step.get("value", "") or query
-        text_contains = step.get("text_contains", "")
         describe = step.get("describe", target or action)
         condition = step.get("condition", "")
         check = step.get("check", verify)
+        text_contains = step.get("text_contains", "")
+        key = step.get("key", "")
 
         screenshot_b64 = None
         error = None
         status = "passed"
-        ai_method = "AI-driven"
+        method = "deterministic"
 
         try:
             # ── TYPE: type text into an element ──
             if action == "type":
-                el = await self._find_el(page, selector, el_idx, elements, text_contains)
+                el = await self._get_element(page, el_idx, elements, text_contains)
                 if not el:
-                    return _fail_step(action, describe, f"Input not found: {selector or target}")
-                if not await el.is_visible():
-                    return _fail_step(action, describe, "Input not visible")
-                try:
-                    if await el.is_disabled():
-                        return FlowStepResult(step=FlowStep(action, describe), status="blocked", error="Input is disabled", ai_used=ai_method)
-                except Exception:
-                    pass
+                    return _fail_step(action, describe, f"Input not found (index {el_idx})")
                 await el.fill(value)
                 await page.wait_for_timeout(300)
 
             # ── CLICK: click an element ──
             elif action == "click":
-                el = await self._find_el(page, selector, el_idx, elements, text_contains)
+                el = await self._get_element(page, el_idx, elements, text_contains)
                 if not el:
-                    return _fail_step(action, describe, f"Element not found: {selector or text_contains or target}")
-                if not await el.is_visible():
-                    return _fail_step(action, describe, "Element not visible")
-                try:
-                    if await el.is_disabled():
-                        return FlowStepResult(step=FlowStep(action, describe), status="blocked", error="Element is disabled", ai_used=ai_method)
-                except Exception:
-                    pass
+                    return _fail_step(action, describe, f"Element not found (index {el_idx}, text '{text_contains}')")
                 await el.click()
                 await wait_for_stable_page(page, timeout_ms=6000)
+                self._track_navigation(page, node, describe)
 
-                # Track new pages
-                current = page.url
-                if current != node.url and self._is_allowed(current):
-                    norm = self._normalize(current)
-                    if norm not in self._state.graph.nodes:
-                        self._state.graph.add_node(norm, depth=node.depth + 1)
-                        self._state.graph.add_edge(node.url, norm)
-                        heapq.heappush(self._state.page_queue, (-5, node.depth + 1, norm))
-                        self._emit("page_discovered", {"url": norm, "depth": node.depth + 1, "from": node.url, "via": describe[:40]})
-
-            # ── PRESS_KEY: press a keyboard key ──
+            # ── PRESS_KEY ──
             elif action == "press_key":
-                key = step.get("key", value or "Enter")
-                await page.keyboard.press(key)
+                await page.keyboard.press(key or value or "Enter")
                 await wait_for_stable_page(page, timeout_ms=6000)
+                self._track_navigation(page, node, describe)
 
-            # ── WAIT: wait for a condition ──
+            # ── WAIT ──
             elif action == "wait":
-                cond = condition or value
+                cond = condition or value or ""
                 if "url" in cond.lower():
                     url_before = page.url
                     for _ in range(10):
                         await page.wait_for_timeout(1000)
                         if page.url != url_before:
                             break
-                elif "element" in cond.lower():
-                    await page.wait_for_timeout(3000)
                 else:
                     await wait_for_stable_page(page, timeout_ms=8000)
 
-            # ── VERIFY: just check the page state ──
+            # ── VERIFY: no action, just check ──
             elif action == "verify":
                 pass
 
-            # ── LEGACY: search (backward compat with heuristic fallback) ──
+            # ── LEGACY: search ──
             elif action == "search":
-                el = await self._find_el(page, selector, el_idx, elements, "")
+                el = await self._get_element(page, el_idx, elements, "")
                 if not el:
                     el = await find_element(page, "search")
                 if not el:
@@ -505,18 +479,20 @@ class QAAgent:
                 await wait_for_stable_page(page, timeout_ms=8000)
                 describe = f"search: '{search_q}'"
 
-            # ── LEGACY: nav (backward compat) ──
+            # ── LEGACY: nav ──
             elif action == "nav":
                 if 0 <= el_idx < len(elements) and elements[el_idx].href and self._is_allowed(elements[el_idx].href):
                     await page.goto(elements[el_idx].href, wait_until="domcontentloaded", timeout=15000)
                     await wait_for_stable_page(page, timeout_ms=6000)
+                    self._track_navigation(page, node, describe)
                 else:
-                    el = await self._find_el(page, selector, el_idx, elements, text_contains)
+                    el = await self._get_element(page, el_idx, elements, text_contains)
                     if el:
                         await el.click()
                         await wait_for_stable_page(page, timeout_ms=6000)
+                        self._track_navigation(page, node, describe)
 
-            # ── LEGACY: fill_form (backward compat) ──
+            # ── LEGACY: fill_form ──
             elif action == "fill_form":
                 if 0 <= el_idx < len(elements):
                     await heuristic_fill_form(page, elements[el_idx].selector)
@@ -525,7 +501,7 @@ class QAAgent:
             # ── Screenshot ──
             screenshot_b64 = await _screenshot(page)
 
-            # ── Verification ──
+            # ── AI Verification (the ONLY place AI is used in execution) ──
             check_text = check or verify
             if self._ai.available and check_text:
                 self._emit("agent_thinking", {"thought": f"Verifying: {check_text[:60]}", "page": page.url})
@@ -536,7 +512,7 @@ class QAAgent:
                 if issues:
                     for issue in issues:
                         self._ai.site_context.key_findings.append(str(issue)[:100])
-                ai_method = "AI verified"
+                method = "AI verified"
             elif not check_text:
                 status = "passed"
                 error = "Action completed"
@@ -556,56 +532,74 @@ class QAAgent:
         return FlowStepResult(
             step=FlowStep(action, describe, "", check or verify),
             status=status, actual_url=page.url,
-            screenshot_b64=screenshot_b64, error=error, ai_used=ai_method,
+            screenshot_b64=screenshot_b64, error=error, ai_used=method,
         )
 
-    async def _find_el(self, page, selector, el_idx, elements, text_contains):
-        """Find an element by selector, element_index, or text content."""
-        # Try CSS selector first
-        if selector:
-            for sel in selector.split(","):
-                sel = sel.strip()
-                if not sel:
-                    continue
-                try:
-                    el = await page.query_selector(sel)
-                    if el and await el.is_visible():
-                        return el
-                except Exception:
-                    pass
+    async def _get_element(self, page, el_idx, elements, text_contains):
+        """Get an element DETERMINISTICALLY. No AI. Uses DOM-discovered selectors.
 
-        # Try element index from the list
+        Priority: element_index → text match → None
+        """
+        # 1. Use element index (most reliable -- selector came from DOM discovery)
         if 0 <= el_idx < len(elements):
             try:
                 el = await page.query_selector(elements[el_idx].selector)
-                if el and await el.is_visible():
-                    return el
+                if el:
+                    visible = await el.is_visible()
+                    if visible:
+                        try:
+                            disabled = await el.is_disabled()
+                        except Exception:
+                            disabled = False
+                        if not disabled:
+                            return el
             except Exception:
                 pass
 
-        # Try text content match
+        # 2. Text content match (for buttons, links with known text)
         if text_contains:
             try:
-                locator = page.get_by_text(text_contains, exact=False).first
-                el = await locator.element_handle()
-                if el and await el.is_visible():
-                    return el
-            except Exception:
-                pass
-            # Try button with text
-            try:
-                buttons = await page.query_selector_all("button, [role=button], a, input[type=submit]")
+                buttons = await page.query_selector_all("button, a, [role=button], input[type=submit]")
                 for btn in buttons:
                     try:
-                        txt = await btn.text_content() or ""
+                        txt = (await btn.text_content() or "").strip()
                         if text_contains.lower() in txt.lower() and await btn.is_visible():
+                            try:
+                                if await btn.is_disabled():
+                                    continue
+                            except Exception:
+                                pass
                             return btn
                     except Exception:
                         continue
             except Exception:
                 pass
 
+            # Also try inputs with matching placeholder
+            try:
+                inputs = await page.query_selector_all("input, textarea")
+                for inp in inputs:
+                    try:
+                        ph = await inp.get_attribute("placeholder") or ""
+                        if text_contains.lower() in ph.lower() and await inp.is_visible():
+                            return inp
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
         return None
+
+    def _track_navigation(self, page, node, describe):
+        """Track if we navigated to a new page."""
+        current = page.url
+        if current != node.url and self._is_allowed(current):
+            norm = self._normalize(current)
+            if norm not in self._state.graph.nodes:
+                self._state.graph.add_node(norm, depth=node.depth + 1)
+                self._state.graph.add_edge(node.url, norm)
+                heapq.heappush(self._state.page_queue, (-5, node.depth + 1, norm))
+                self._emit("page_discovered", {"url": norm, "depth": node.depth + 1, "from": node.url, "via": describe[:40]})
 
     def _heuristic_journeys(self, elements: list[PageElement], node: SiteNode) -> list[dict]:
         """Fallback: plan simple journeys without AI."""

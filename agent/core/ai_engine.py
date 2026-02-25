@@ -284,9 +284,10 @@ EXAMPLE for a site with search:
 }}
 
 RULES:
-- Use CSS selectors that MATCH elements in the element list above
-- If you can't find an exact selector, use element_index from the list
-- For buttons: use text_contains to match button text (case insensitive)
+- ALWAYS use element_index from the element list above. This is the MOST RELIABLE way to target elements.
+- Only use CSS "selector" field as a FALLBACK if element_index doesn't apply (e.g. on a new page after navigation)
+- For buttons: use text_contains to match button text (case insensitive) as additional fallback
+- For type/input actions: ALWAYS include both element_index AND a selector
 - DO NOT interact with disabled elements
 - NEVER test footer links, legal pages, language selectors
 - The first journey MUST be the most critical user action on this site
