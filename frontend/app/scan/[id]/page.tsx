@@ -374,6 +374,19 @@ export default function ScanResultPage() {
         @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
         @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
         * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        @media (max-width: 768px) {
+          .live-two-col { grid-template-columns: 1fr !important; }
+          .live-sitemap { display: none !important; }
+          .stat-grid-4 { grid-template-columns: repeat(2, 1fr) !important; }
+          .stat-grid-4 > div { padding: 14px 10px !important; }
+          .stat-grid-4 .stat-num { font-size: 24px !important; }
+          .flow-screenshot { display: none !important; }
+          .report-flow-pipeline { overflow-x: auto !important; }
+          .report-stat-cards { grid-template-columns: repeat(2, 1fr) !important; }
+          .perf-grid { grid-template-columns: 1fr !important; }
+          .sitemap-grid { grid-template-columns: repeat(2, 1fr) !important; }
+        }
       `}</style>
     </div>
   );
@@ -403,7 +416,7 @@ function LiveView({ url, nodes, edges, flowSteps, log, counters, journey, though
       </div>
 
       {/* Counters */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: T.border, borderRadius: T.radius, overflow: "hidden", marginBottom: 36 }}>
+      <div className="stat-grid-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: T.border, borderRadius: T.radius, overflow: "hidden", marginBottom: 36 }}>
         {([
           { label: "Pages", value: counters.pages, color: T.text },
           { label: "Flows", value: `${counters.flowsPassed}/${counters.flows}`, color: counters.flows > 0 ? (counters.flowsPassed === counters.flows ? T.accent : T.text) : T.textMuted, sub: "passed" },
@@ -436,10 +449,10 @@ function LiveView({ url, nodes, edges, flowSteps, log, counters, journey, though
       )}
 
       {/* Two-column: Site Map + Agent Journey */}
-      <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 16, alignItems: "start" }}>
+      <div className="live-two-col" style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 16, alignItems: "start" }}>
 
         {/* Left: Mini Site Map */}
-        <Card style={{ padding: "14px 16px", position: "sticky", top: 80 }}>
+        <Card className="live-sitemap" style={{ padding: "14px 16px", position: "sticky", top: 80 }}>
           <Label style={{ marginBottom: 12 }}>Site Map</Label>
           {Array.from(nodes.values()).length === 0 ? (
             <p style={{ fontSize: 11, color: T.textMuted }}>Discovering...</p>
@@ -503,7 +516,7 @@ function LiveView({ url, nodes, edges, flowSteps, log, counters, journey, though
                     <div style={{ display: "flex", gap: 0 }}>
                       {/* Screenshot thumbnail */}
                       {pg.screenshot && (
-                        <div style={{ width: 180, flexShrink: 0, borderRight: `1px solid ${T.borderSubtle}`, padding: 10 }}>
+                        <div className="flow-screenshot" style={{ width: 180, flexShrink: 0, borderRight: `1px solid ${T.borderSubtle}`, padding: 10 }}>
                           <img
                             src={`data:image/jpeg;base64,${pg.screenshot}`}
                             alt={pg.url}
@@ -645,7 +658,7 @@ function Report({ data }: { data: ScanResult }) {
       </p>
 
       {/* ── Stat Cards ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 48 }}>
+      <div className="report-stat-cards" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 48 }}>
         <StatCard value={score} label="Health" sub={score >= 80 ? "Healthy" : score >= 60 ? "Needs work" : "Critical"} color={sColor} ring ringMax={100} />
         <StatCard value={data.pages_tested} label="Pages" sub="explored" />
         {flows.length > 0 && <StatCard value={`${passedFlows}/${flows.length}`} label="Flows" sub="passed" color={passedFlows === flows.length ? T.accent : T.text} />}
@@ -685,7 +698,7 @@ function Report({ data }: { data: ScanResult }) {
       {data.metrics.length > 0 && (
         <section style={{ marginBottom: 56 }}>
           <SectionHeader title="Performance" subtitle={`${data.metrics.length} pages measured`} />
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+          <div className="perf-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
             {data.metrics.map((m, i) => <PerfCard key={i} metric={m} />)}
           </div>
         </section>
@@ -932,7 +945,7 @@ function PerfCard({ metric: m }: { metric: Metric }) {
 
 function SiteMapGrid({ graph }: { graph: SiteGraph }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+    <div className="sitemap-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
       {graph.nodes.map(node => {
         const hasBugs = node.bugs > 0;
         const bg = hasBugs ? T.redDim : T.accentDim;
@@ -1165,9 +1178,9 @@ function RemoteBrowserModal({ scanId, loginUrl, frame, started, onStart, onDone 
    SHARED COMPONENTS & HELPERS
    ═══════════════════════════════════════════════════════════ */
 
-function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+function Card({ children, style, className }: { children: React.ReactNode; style?: React.CSSProperties; className?: string }) {
   return (
-    <div style={{ background: T.card, border: `1px solid ${T.cardBorder}`, borderRadius: T.radius, overflow: "hidden", ...style }}>
+    <div className={className} style={{ background: T.card, border: `1px solid ${T.cardBorder}`, borderRadius: T.radius, overflow: "hidden", ...style }}>
       {children}
     </div>
   );

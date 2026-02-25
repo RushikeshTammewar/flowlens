@@ -254,6 +254,7 @@ class QAAgent:
                 self._emit("agent_thinking", {"thought": f"Will test: {', '.join(names)}", "page": node.url})
 
         if not journeys:
+            self._emit("agent_thinking", {"thought": "AI planning returned empty — using heuristic fallback", "page": node.url})
             journeys = self._heuristic_journeys(elements, node)
 
         # Execute journeys
