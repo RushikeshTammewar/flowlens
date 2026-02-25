@@ -357,7 +357,7 @@ export default function Home() {
               >
                 Your AI
                 <br />
-                <em>QA Engineer</em>
+                <em>QA Agent</em>
               </h1>
               <p
                 style={{
@@ -368,9 +368,9 @@ export default function Home() {
                   lineHeight: 1.7,
                 }}
               >
-                Paste your URL. We crawl every page like a human — on desktop
-                and mobile. Every day. We find the bugs, track performance, and
-                send you a morning briefing of what changed.
+                Paste your URL. Our AI agent navigates your site like a senior
+                QA engineer — testing every workflow, filling forms, clicking
+                through flows. It finds what&apos;s broken before your users do.
               </p>
               <div
                 style={{
@@ -383,7 +383,7 @@ export default function Home() {
                 }}
               >
                 <span className="status-dot" />
-                <span>Beta — Try it now</span>
+                <span>Beta — Test your workflows</span>
               </div>
             </div>
 
@@ -626,13 +626,13 @@ export default function Home() {
               },
               {
                 num: "02",
-                title: "We Crawl",
-                desc: "Our agent navigates every page like a human — desktop and mobile viewports.",
+                title: "Agent Explores",
+                desc: "Our AI agent navigates your site, discovers workflows, fills forms, tests search — like a QA engineer would.",
               },
               {
                 num: "03",
-                title: "Bugs Found",
-                desc: "JS errors, broken links, slow pages, accessibility issues — caught automatically.",
+                title: "Workflows Tested",
+                desc: "Every critical workflow tested end-to-end. Broken flows, JS errors, slow pages — caught and reported.",
               },
               {
                 num: "04",
@@ -694,23 +694,22 @@ export default function Home() {
                 className="serif"
                 style={{ fontSize: 36, marginBottom: 16, letterSpacing: "-0.02em" }}
               >
-                Not a scanner.
+                Not a tool.
                 <br />
-                A <em>service</em>.
+                An <em>agent</em>.
               </h2>
               <p style={{ color: "var(--gray)", fontSize: 14, maxWidth: 380, lineHeight: 1.7 }}>
-                Most testing tools scan once and give you a report. FlowLens
-                guards your site every day of the year — tracking bugs over
-                time, detecting regressions after deploys, and alerting you the
-                moment something breaks. Like having a QA engineer on your team
-                who never takes a day off.
+                Most testing tools need scripts and maintenance. FlowLens is
+                an autonomous agent that discovers and tests your workflows
+                continuously — no scripts, no config. Like having a QA
+                engineer on your team who never takes a day off.
               </p>
             </div>
             <div>
               {[
                 {
-                  title: "Autonomous flow discovery",
-                  desc: "No test scripts needed. FlowLens discovers every navigable flow on your site automatically — login, checkout, search, settings.",
+                  title: "Autonomous workflow discovery",
+                  desc: "No test scripts needed. The agent discovers every workflow — login, checkout, search, onboarding — and tests them end-to-end.",
                 },
                 {
                   title: "Continuous daily monitoring",
@@ -1055,7 +1054,7 @@ export default function Home() {
               textAlign: "center",
             }}
           >
-            Delivered to your inbox and Slack every morning. A senior QA engineer costs $120K/year — FlowLens does this daily.
+            Delivered to your inbox and Slack every morning. A senior QA engineer costs $120K/year. This agent works 24/7 for a fraction.
           </p>
         </div>
       </section>
@@ -1079,7 +1078,7 @@ export default function Home() {
               marginBottom: 16,
             }}
           >
-            Stop shipping bugs to production
+            Stop shipping broken workflows
           </h2>
           <p
             style={{
@@ -1089,8 +1088,8 @@ export default function Home() {
               lineHeight: 1.7,
             }}
           >
-            Paste your URL. Get your first scan in 5 minutes. Wake up to a
-            daily briefing tomorrow morning. No signup, no credit card.
+            Paste your URL. The agent tests your critical workflows in
+            minutes. Wake up to a daily briefing. No signup, no credit card.
           </p>
           <a
             href="#scan"
