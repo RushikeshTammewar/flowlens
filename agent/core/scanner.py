@@ -61,6 +61,13 @@ class FlowLensScanner:
                 )
                 page = await ctx.new_page()
 
+                # Apply stealth to avoid bot detection
+                try:
+                    from playwright_stealth import stealth_async
+                    await stealth_async(page)
+                except ImportError:
+                    pass
+
                 agent = QAAgent(
                     base_url=self.url,
                     max_pages=self.max_pages,

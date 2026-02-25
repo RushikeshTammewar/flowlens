@@ -74,7 +74,7 @@ class FlowStepResult:
     """Result of executing a single flow step."""
 
     step: FlowStep
-    status: str   # passed | failed | skipped
+    status: str   # passed | failed | blocked | inconclusive | skipped
     actual_url: str = ""
     screenshot_b64: str | None = None
     error: str | None = None
@@ -102,7 +102,7 @@ class FlowResult:
     """Result of executing an entire flow."""
 
     flow: Flow
-    status: str   # passed | failed | partial
+    status: str   # passed | failed | blocked | partial
     steps: list[FlowStepResult] = field(default_factory=list)
     duration_ms: int = 0
     context_summary: dict = field(default_factory=dict)

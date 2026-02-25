@@ -1,10 +1,14 @@
 """Central AI engine for FlowLens -- the brain of the QA agent.
 
-Every non-trivial decision goes through this engine. It uses Gemini 2.0
-Flash for all calls (vision + text). Heuristics are used only as a
-fast-path optimization; AI is the authoritative decision maker.
+Five-stage AI strategy:
+1. Site Understanding -- what kind of site, who uses it, critical paths
+2. Page Assessment -- what is this page, what can be done, visual issues
+3. Journey Planning -- multi-step user journeys (not single clicks)
+4. Step Execution -- find elements, check interactable, act
+5. Outcome Verification -- pass/fail/blocked/inconclusive with nuance
 
-Usage: one GeminiEngine instance per scan, shared across all modules.
+Every call includes accumulated context so the AI builds understanding
+over time, like a real QA engineer would.
 """
 
 from __future__ import annotations
@@ -14,31 +18,46 @@ import base64
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from playwright.async_api import Page
 
 
 @dataclass
-class AIDecision:
-    """A decision made by the AI engine."""
-    action: str
-    target: str
-    reasoning: str
-    confidence: float  # 0.0 - 1.0
-    raw_response: str = ""
+class SiteContext:
+    """Accumulated understanding of the site, built over the scan."""
+    site_type: str = ""
+    target_user: str = ""
+    main_features: list[str] = field(default_factory=list)
+    critical_paths: list[str] = field(default_factory=list)
+    requires_auth_for: list[str] = field(default_factory=list)
+    pages_visited: list[str] = field(default_factory=list)
+    journeys_completed: list[dict] = field(default_factory=list)
+    key_findings: list[str] = field(default_factory=list)
+    auth_state: str = "not logged in"
+
+    def summary(self) -> str:
+        parts = [f"Site type: {self.site_type or 'unknown'}"]
+        if self.main_features:
+            parts.append(f"Main features: {', '.join(self.main_features[:5])}")
+        parts.append(f"Auth: {self.auth_state}")
+        parts.append(f"Pages visited: {len(self.pages_visited)}")
+        if self.journeys_completed:
+            passed = sum(1 for j in self.journeys_completed if j.get("status") == "passed")
+            parts.append(f"Journeys: {passed}/{len(self.journeys_completed)} passed")
+        if self.key_findings:
+            parts.append(f"Findings: {'; '.join(self.key_findings[-5:])}")
+        return " | ".join(parts)
 
 
 class GeminiEngine:
-    """Wraps all Gemini API interactions for the QA agent.
-
-    Uses the new google-genai SDK with gemini-2.5-flash.
-    """
+    """Five-stage AI engine with accumulated context."""
 
     def __init__(self, model_name: str = "gemini-2.5-flash"):
         self._model_name = model_name
         self._client = None
         self._call_count = 0
+        self.site_context = SiteContext()
 
     def _ensure_client(self):
         if self._client:
@@ -58,10 +77,8 @@ class GeminiEngine:
         return {"calls": self._call_count, "model": self._model_name}
 
     async def _call(self, parts: list, expect_json: bool = True) -> str | dict | None:
-        """Make a Gemini API call. Returns parsed JSON if expect_json, else raw text."""
         if not self.available:
             return None
-
         self._ensure_client()
         self._call_count += 1
 
@@ -72,21 +89,21 @@ class GeminiEngine:
                     contents.append(part)
                 elif isinstance(part, dict) and "mime_type" in part:
                     from google.genai import types
-                    contents.append(types.Part.from_bytes(data=base64.b64decode(part["data"]), mime_type=part["mime_type"]))
-            resp = self._client.models.generate_content(
-                model=self._model_name,
-                contents=contents,
+                    contents.append(types.Part.from_bytes(
+                        data=base64.b64decode(part["data"]), mime_type=part["mime_type"],
+                    ))
+            return self._client.models.generate_content(
+                model=self._model_name, contents=contents,
             )
-            return resp.text if resp and resp.text else None
 
         try:
-            text = await asyncio.to_thread(_sync)
+            resp = await asyncio.to_thread(_sync)
+            text = resp.text if resp and resp.text else None
         except Exception:
             return None
 
         if not text:
             return None
-
         if not expect_json:
             return text.strip()
 
@@ -94,23 +111,172 @@ class GeminiEngine:
         if cleaned.startswith("```"):
             cleaned = re.sub(r"^```\w*\n?", "", cleaned)
             cleaned = re.sub(r"\n?```\s*$", "", cleaned)
-
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
             return {"raw": cleaned}
 
-    async def pick_element(self, page: Page, target_description: str) -> dict | None:
-        """AI looks at the page and picks the best element to interact with.
+    async def _screenshot_b64(self, page: Page) -> str | None:
+        try:
+            buf = await page.screenshot(full_page=False, type="png")
+            return base64.b64encode(buf).decode()
+        except Exception:
+            return None
 
-        Returns {"index": int, "reasoning": str} or None.
+    # ═══════════════════════════════════════════════════════
+    # STAGE 1: Site Understanding (once, at start)
+    # ═══════════════════════════════════════════════════════
+
+    async def understand_site(self, page: Page) -> SiteContext:
+        """Look at the homepage and build a mental model of the site."""
+        shot = await self._screenshot_b64(page)
+        parts = []
+        if shot:
+            parts.append({"mime_type": "image/png", "data": shot})
+
+        parts.append(f"""You are a senior QA engineer starting a new testing session.
+
+Look at this website homepage and tell me:
+
+URL: {page.url}
+Title: {await page.title()}
+
+1. site_type: What kind of site is this? (saas, ecommerce, news, blog, docs, social, portfolio, corporate, other)
+2. target_user: Who uses this site? (1 sentence)
+3. main_features: What are the 3-5 most important features visible? (list)
+4. critical_paths: What are the 2-3 most critical user journeys a QA engineer must test? (list of short descriptions)
+5. requires_auth: What features seem to require login? (list)
+6. public_testable: What can be tested WITHOUT logging in? (list)
+
+Respond in JSON:
+{{"site_type": "...", "target_user": "...", "main_features": [...], "critical_paths": [...], "requires_auth": [...], "public_testable": [...]}}""")
+
+        result = await self._call(parts)
+        if isinstance(result, dict) and "site_type" in result:
+            self.site_context.site_type = result.get("site_type", "unknown")
+            self.site_context.target_user = result.get("target_user", "")
+            self.site_context.main_features = result.get("main_features", [])
+            self.site_context.critical_paths = result.get("critical_paths", [])
+            self.site_context.requires_auth_for = result.get("requires_auth", [])
+
+        return self.site_context
+
+    # ═══════════════════════════════════════════════════════
+    # STAGE 2: Page Assessment (per page, before testing)
+    # ═══════════════════════════════════════════════════════
+
+    async def assess_page(self, page: Page, elements_summary: str) -> dict:
+        """Look at a page and assess it BEFORE testing anything."""
+        shot = await self._screenshot_b64(page)
+        parts = []
+        if shot:
+            parts.append({"mime_type": "image/png", "data": shot})
+
+        parts.append(f"""You are a senior QA engineer assessing a page BEFORE testing it.
+
+{self.site_context.summary()}
+
+Current page: {page.url}
+Title: {await page.title()}
+
+Interactive elements found:
+{elements_summary}
+
+Assess this page:
+1. page_purpose: What is this page for? (1 sentence)
+2. testable_features: What can be tested here without auth? (list)
+3. auth_required_features: What needs login? (list)
+4. visual_issues: Any immediately visible problems? (broken layout, missing images, errors) (list, empty if none)
+5. disabled_elements: Which elements appear disabled/non-interactive? (list of indices, empty if none)
+
+Respond in JSON:
+{{"page_purpose": "...", "testable_features": [...], "auth_required_features": [...], "visual_issues": [...], "disabled_elements": [...]}}""")
+
+        result = await self._call(parts)
+        return result if isinstance(result, dict) else {}
+
+    # ═══════════════════════════════════════════════════════
+    # STAGE 3: Journey Planning (per page, multi-step)
+    # ═══════════════════════════════════════════════════════
+
+    async def plan_journeys(
+        self, page: Page, elements_summary: str,
+        page_assessment: dict, already_tested: list[str],
+    ) -> list[dict]:
+        """Plan multi-step user journeys to test on this page.
+
+        Returns list of journeys, each with multiple steps:
+        [{name, priority, requires_auth, steps: [{action, element_index, target, query, verify}]}]
         """
+        testable = page_assessment.get("testable_features", [])
+        disabled = page_assessment.get("disabled_elements", [])
+
+        shot = await self._screenshot_b64(page)
+        parts = []
+        if shot:
+            parts.append({"mime_type": "image/png", "data": shot})
+
+        parts.append(f"""You are a senior QA engineer planning test journeys.
+
+{self.site_context.summary()}
+
+Current page: {page.url} — {page_assessment.get('page_purpose', '')}
+Auth: {self.site_context.auth_state}
+Testable without auth: {testable}
+Disabled elements (DO NOT interact with): {disabled}
+Already tested: {already_tested[:15]}
+
+Elements on page:
+{elements_summary}
+
+Plan 2-4 USER JOURNEYS. A journey is a complete user task with multiple steps:
+- "Search and explore" = type query → check results → click a result → verify detail page
+- "Fill and submit form" = fill fields → submit → verify success/error message
+- "Browse section" = click nav link → verify page loads → check content → click sub-link
+
+RULES:
+- Each journey has 2-4 STEPS (not just one click!)
+- Each step has: action (search/click/fill_form/verify), element_index, verify (what to check)
+- For search steps, include a "query" field with a realistic search term for this site
+- DO NOT plan journeys for auth-required features if we're not logged in
+- DO NOT interact with disabled elements (indices: {disabled})
+- Focus on what we CAN test. Report auth-required features separately.
+- A journey that just clicks a link and stops is NOT a journey — follow through!
+
+Respond JSON:
+{{"journeys": [
+  {{"name": "...", "priority": 1-10, "requires_auth": false,
+    "steps": [
+      {{"action": "search", "element_index": 3, "query": "laptop", "verify": "results page loads with items"}},
+      {{"action": "click", "target": "first result", "verify": "detail page with content"}},
+      {{"action": "verify", "target": "page quality", "verify": "has title, images, description"}}
+    ]
+  }}
+],
+"auth_blocked_features": ["list of features that need login"]
+}}""")
+
+        result = await self._call(parts)
+        if isinstance(result, dict) and "journeys" in result:
+            return result["journeys"]
+        return []
+
+    # ═══════════════════════════════════════════════════════
+    # STAGE 4: Element Finding (per step)
+    # ═══════════════════════════════════════════════════════
+
+    async def find_element_for_step(self, page: Page, step_description: str) -> dict | None:
+        """AI finds the right element on a NEW page (after navigation)."""
+        shot = await self._screenshot_b64(page)
+        parts = []
+        if shot:
+            parts.append({"mime_type": "image/png", "data": shot})
+
         elements = await page.evaluate("""() => {
             const els = [];
             const interactive = document.querySelectorAll(
                 'a[href], button, input:not([type=hidden]), select, textarea, ' +
-                '[role="button"], [role="link"], [role="menuitem"], [onclick], ' +
-                '[role="tab"], [role="checkbox"], [role="radio"], summary'
+                '[role="button"], [role="link"], [role="menuitem"], [onclick], summary'
             );
             for (let i = 0; i < Math.min(interactive.length, 50); i++) {
                 const el = interactive[i];
@@ -118,10 +284,9 @@ class GeminiEngine:
                 if (rect.width === 0 && rect.height === 0) continue;
                 const text = (el.textContent || '').trim().substring(0, 80);
                 const ariaLabel = el.getAttribute('aria-label') || '';
-                const placeholder = el.placeholder || '';
-                const href = el.href || el.getAttribute('data-href') || '';
-                const type = el.type || el.tagName.toLowerCase();
-                els.push({i, tag: el.tagName, type, text, ariaLabel, placeholder, href: href.substring(0, 100)});
+                const href = el.href || '';
+                const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                els.push({i, tag: el.tagName, text, ariaLabel, href: href.substring(0, 80), disabled});
             }
             return els;
         }""")
@@ -130,270 +295,166 @@ class GeminiEngine:
             return None
 
         elements_str = "\n".join(
-            f"[{e['i']}] <{e['tag']}> type={e['type']} text='{e['text'][:60]}' aria='{e['ariaLabel'][:40]}' href='{e['href'][:60]}'"
+            f"[{e['i']}] <{e['tag']}> text='{e['text'][:50]}' aria='{e['ariaLabel'][:30]}' href='{e['href'][:50]}' disabled={e['disabled']}"
             for e in elements
         )
 
-        result = await self._call([
-            f"""You are a senior QA engineer testing a website. You need to interact with: "{target_description}"
+        parts.append(f"""Find the element that best matches: "{step_description}"
 
-Current page URL: {page.url}
-
-Interactive elements on the page:
+Page: {page.url}
+Elements:
 {elements_str}
 
-Which element best matches what I need to interact with?
+Pick the best match. DO NOT pick disabled elements.
+Respond JSON: {{"index": <number>, "reasoning": "why"}}
+If no match: {{"index": -1, "reasoning": "why not found"}}""")
 
-Respond in JSON: {{"index": <number>, "reasoning": "why this element"}}
-If no element matches, respond: {{"index": -1, "reasoning": "why not found"}}"""
-        ])
-
-        return result
+        return await self._call(parts)
 
     async def decide_search_query(self, page: Page) -> str:
-        """AI reads the page and decides what a real user would search for."""
-        page_context = await page.evaluate("""() => {
-            const title = document.title || '';
-            const h1 = document.querySelector('h1')?.textContent?.trim() || '';
-            const meta = document.querySelector('meta[name="description"]')?.content || '';
-            const navLinks = [...document.querySelectorAll('nav a')].map(a => a.textContent.trim()).filter(Boolean).slice(0, 10);
-            const bodyText = (document.body?.innerText || '').substring(0, 2000);
-            return {title, h1, meta, navLinks, bodyText};
-        }""")
-
+        """AI decides what to search for based on the site context."""
         result = await self._call([
-            f"""You are a senior QA engineer testing a website's search functionality.
+            f"""What would a real user search for on this site?
 
-Site URL: {page.url}
-Page title: {page_context.get('title', '')}
-Main heading: {page_context.get('h1', '')}
-Description: {page_context.get('meta', '')}
-Navigation links: {', '.join(page_context.get('navLinks', []))}
-Page content (first 2000 chars): {page_context.get('bodyText', '')[:1500]}
+Site: {self.site_context.site_type} — {', '.join(self.site_context.main_features[:3])}
+URL: {page.url}
+Title: {await page.title()}
 
-What would a real user search for on this site? Pick a specific, realistic search query that would return meaningful results.
+Pick a specific, realistic search query. Not "test" — something a real person would type.
 
-Respond in JSON: {{"query": "your search query", "reasoning": "why this query"}}"""
+Respond JSON: {{"query": "...", "reasoning": "..."}}"""
         ])
-
         if isinstance(result, dict) and "query" in result:
             return result["query"]
         return "test"
 
     async def analyze_form(self, page: Page, form_selector: str) -> list[dict]:
-        """AI analyzes a form and decides what data to put in each field."""
+        """AI analyzes form fields and decides what data to enter."""
         form_info = await page.evaluate("""(sel) => {
             const form = document.querySelector(sel);
             if (!form) return null;
             const fields = [];
-            const inputs = form.querySelectorAll('input, select, textarea');
-            for (const el of inputs) {
+            for (const el of form.querySelectorAll('input, select, textarea')) {
                 const type = (el.getAttribute('type') || el.tagName.toLowerCase()).toLowerCase();
-                if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
+                if (['hidden','submit','button','reset','image'].includes(type)) continue;
                 const rect = el.getBoundingClientRect();
                 if (rect.width === 0 && rect.height === 0) continue;
-
                 let label = '';
-                if (el.id) {
-                    const lbl = document.querySelector(`label[for="${el.id}"]`);
-                    if (lbl) label = lbl.textContent.trim().substring(0, 100);
-                }
-                if (!label) {
-                    const parent = el.closest('label');
-                    if (parent) label = parent.textContent.trim().substring(0, 100);
-                }
-
-                let selector = '';
-                if (el.id) selector = '#' + CSS.escape(el.id);
-                else if (el.name) selector = `${sel} [name="${el.name}"]`;
-                else selector = `${sel} ${el.tagName.toLowerCase()}[type="${type}"]`;
-
-                fields.push({
-                    selector,
-                    tag: el.tagName.toLowerCase(),
-                    type,
-                    name: el.name || '',
-                    placeholder: el.placeholder || '',
-                    label,
-                    required: el.required,
-                    value: el.value || '',
-                    autocomplete: el.autocomplete || '',
-                });
+                if (el.id) { const lbl = document.querySelector(`label[for="${el.id}"]`); if (lbl) label = lbl.textContent.trim().substring(0, 80); }
+                if (!label) { const p = el.closest('label'); if (p) label = p.textContent.trim().substring(0, 80); }
+                let selector = el.id ? '#' + CSS.escape(el.id) : (el.name ? `${sel} [name="${el.name}"]` : `${sel} ${el.tagName.toLowerCase()}[type="${type}"]`);
+                fields.push({selector, tag: el.tagName.toLowerCase(), type, name: el.name||'', placeholder: el.placeholder||'', label, required: el.required, autocomplete: el.autocomplete||'', disabled: el.disabled});
             }
-            const title = document.title || '';
-            const url = window.location.href;
-            const formAction = form.action || '';
-            return {fields, title, url, formAction};
+            return {fields, url: location.href, title: document.title, action: form.action||''};
         }""", form_selector)
 
         if not form_info or not form_info.get("fields"):
             return []
 
         fields_str = "\n".join(
-            f"- [{f['selector']}] type={f['type']} name='{f['name']}' "
-            f"label='{f['label'][:50]}' placeholder='{f['placeholder'][:50]}' "
-            f"required={f['required']} autocomplete='{f['autocomplete']}'"
+            f"- [{f['selector']}] type={f['type']} name='{f['name']}' label='{f['label'][:40]}' placeholder='{f['placeholder'][:40]}' required={f['required']} disabled={f['disabled']}"
             for f in form_info["fields"]
         )
 
         result = await self._call([
-            f"""You are a senior QA engineer filling a form on a website.
+            f"""Fill this form with realistic test data.
 
-Page URL: {form_info.get('url', '')}
-Page title: {form_info.get('title', '')}
-Form action: {form_info.get('formAction', '')}
+Site: {self.site_context.site_type}
+Page: {form_info.get('url', '')}
+Form action: {form_info.get('action', '')}
 
-Form fields:
+Fields:
 {fields_str}
 
-For each field, decide what test data a QA engineer would enter. Use realistic but fake data.
 Rules:
-- Email: use a unique test email like flowlens.test.xxx@gmail.com
-- Password: use a strong test password like TestPass2026!
-- Phone: use a realistic fake phone number
-- Names: use realistic fake names
-- Addresses: use realistic fake addresses
-- For dropdowns/selects: pick the first non-empty option
+- Use unique email like flowlens.test.{os.urandom(4).hex()}@gmail.com
+- Use strong password: TestPass2026!
+- Use realistic names, phones, addresses
+- Skip disabled fields
 - Required fields MUST be filled
 
-Respond in JSON: {{"fields": [{{"selector": "...", "value": "...", "action": "fill|select|check"}}]}}"""
-        ])
+Respond JSON: {{"fields": [{{"selector": "...", "value": "...", "action": "fill|select|check"}}]}}"""])
 
         if isinstance(result, dict) and "fields" in result:
             return result["fields"]
         return []
 
-    async def verify_action(self, page: Page, action_description: str, expected_outcome: str) -> tuple[bool, str]:
-        """AI looks at the page screenshot and verifies if an action succeeded."""
-        try:
-            screenshot = await page.screenshot(full_page=False, type="png")
-            screenshot_b64 = base64.b64encode(screenshot).decode()
-        except Exception:
-            return (True, "Could not capture screenshot for verification")
+    # ═══════════════════════════════════════════════════════
+    # STAGE 5: Outcome Verification (per step, nuanced)
+    # ═══════════════════════════════════════════════════════
 
-        result = await self._call([
-            {"mime_type": "image/png", "data": screenshot_b64},
-            f"""You are a senior QA engineer verifying that a user action succeeded.
+    async def verify_step(self, page: Page, action_desc: str, expected: str) -> dict:
+        """Verify a step outcome with nuance. Returns status + reason.
 
-ACTION PERFORMED: {action_description}
-EXPECTED OUTCOME: {expected_outcome}
-CURRENT URL: {page.url}
+        Possible statuses: passed, failed, blocked, inconclusive
+        """
+        shot = await self._screenshot_b64(page)
+        parts = []
+        if shot:
+            parts.append({"mime_type": "image/png", "data": shot})
 
-Look at the screenshot carefully and answer:
-1. Did the expected outcome occur? Be strict -- if it's ambiguous, say false.
-2. Are there any error messages, broken layouts, or unexpected states visible?
-3. Does the page look like it loaded correctly?
+        parts.append(f"""You performed: {action_desc}
+Expected: {expected}
+URL: {page.url}
 
-Respond in JSON only:
-{{"success": true/false, "reason": "1-2 sentence explanation", "issues": ["any problems noticed"]}}"""
-        ])
+Look at the screenshot and determine the outcome. Choose ONE:
 
-        if isinstance(result, dict):
-            success = result.get("success", True)
-            reason = result.get("reason", "AI verification")
-            issues = result.get("issues", [])
-            extra = f" Issues: {'; '.join(issues)}" if issues else ""
-            return (success, f"{reason}{extra}")
+- "passed": The expected outcome clearly occurred. Describe the evidence.
+- "failed": Something UNEXPECTED happened that indicates a BUG. (Error message, wrong content, broken UI, crash). Describe the bug.
+- "blocked": Cannot proceed because of auth/permissions/CAPTCHA. This is NOT a bug — it's a prerequisite we don't have.
+- "inconclusive": Can't determine the outcome. Don't have enough information.
 
-        return (True, "AI verification inconclusive")
+IMPORTANT distinctions:
+- A login page appearing is BLOCKED, not failed (auth required)
+- A disabled button is an OBSERVATION, not a failure
+- An error message like "404" or "500" IS a failure (actual bug)
+- A page loading with content IS a pass
+- A blank page with no content IS a failure
+- A slow page is a PERFORMANCE NOTE, not a failure
+
+Respond JSON: {{"status": "passed|failed|blocked|inconclusive", "reason": "1-2 sentences", "issues": ["any bugs or problems noticed"], "notes": "any observations"}}""")
+
+        result = await self._call(parts)
+        if isinstance(result, dict) and "status" in result:
+            return result
+        return {"status": "inconclusive", "reason": "AI verification unavailable"}
 
     async def assess_page_quality(self, page: Page) -> list[dict]:
-        """AI looks at the page and reports anything that looks wrong -- like a QA engineer would."""
-        try:
-            screenshot = await page.screenshot(full_page=False, type="png")
-            screenshot_b64 = base64.b64encode(screenshot).decode()
-        except Exception:
+        """Visual quality check of the page."""
+        shot = await self._screenshot_b64(page)
+        if not shot:
             return []
 
         result = await self._call([
-            {"mime_type": "image/png", "data": screenshot_b64},
-            f"""You are a senior QA engineer reviewing a webpage for bugs and issues.
+            {"mime_type": "image/png", "data": shot},
+            f"""Senior QA engineer reviewing page quality.
 
 URL: {page.url}
 
-Look at the screenshot and report ANY issues you see. Be thorough but avoid false positives.
-
-Check for:
-- Overlapping or cut-off text
-- Broken layout or misaligned elements
-- Missing images or icons
-- Unreadable text (too small, low contrast)
-- Broken navigation or menus
-- Error messages or warnings
+Report ONLY clear, definite issues (not subjective opinions):
+- Broken images, overlapping text, cut-off content
+- Error messages, warning banners
 - Empty sections that should have content
-- UI elements that look broken or incomplete
+- Broken navigation or layout
 
-Respond in JSON: {{"issues": [{{"title": "...", "severity": "P1|P2|P3|P4", "description": "..."}}], "overall_quality": "good|acceptable|poor"}}
-If the page looks fine, respond: {{"issues": [], "overall_quality": "good"}}"""
+Do NOT report: subjective design opinions, minor spacing issues, expected login gates.
+
+Respond JSON: {{"issues": [{{"title": "...", "severity": "P1|P2|P3|P4", "description": "..."}}], "quality": "good|acceptable|poor"}}
+If the page looks fine: {{"issues": [], "quality": "good"}}""",
         ])
 
         if isinstance(result, dict):
             return result.get("issues", [])
         return []
 
-    async def plan_page_tests(
-        self, page: Page, elements_summary: str, already_tested: list[str],
-        site_type: str, auth_state: str,
-    ) -> list[dict]:
-        """AI sees a page and decides what flows to test. The core brain.
-
-        Returns list of candidate flows:
-        [{"name": "...", "priority": 1-10, "type": "search|form|nav|cta|menu",
-          "element_index": int, "reasoning": "..."}]
-        """
+    async def decide_recovery(self, page: Page, error: str, context: str) -> dict | None:
+        """AI decides how to recover from an error."""
         result = await self._call([
-            f"""You are a senior QA engineer visiting a page. Decide what to test.
+            f"""QA testing error. URL: {page.url}
+Error: {error}
+Context: {context}
 
-URL: {page.url}
-Page title: {await page.title()}
-Site type: {site_type}
-Auth state: {auth_state}
-Already tested on this site: {already_tested[:20]}
-
-Interactive elements on this page:
-{elements_summary}
-
-For each testable interaction, return:
-- name: descriptive ("Search for products", "Submit contact form", "Navigate to pricing")
-- priority: 1-10 (10 = most critical). Search/login/forms = 8-10. Nav = 5-7. Footer = 1-3.
-- type: search | form | nav | cta | menu
-- element_index: which element number to interact with
-- reasoning: 1 sentence why this matters for QA
-
-RULES:
-- Focus on HIGH VALUE tests: search, forms, login, primary CTAs, main navigation
-- SKIP low-value: footer links, privacy/terms, cookie settings, language selectors
-- Max 6 tests per page. Quality over quantity.
-- If a search box exists, ALWAYS test it (priority 10)
-- If a form exists (not login), ALWAYS test it (priority 9)
-- Don't suggest tests that are in the "already tested" list
-
-Respond JSON: {{"flows": [...]}}"""
-        ])
-
-        if isinstance(result, dict) and "flows" in result:
-            return result["flows"]
-        return []
-
-    async def decide_recovery_action(self, page: Page, error_description: str, flow_context: str) -> dict | None:
-        """AI decides how to recover from an unexpected state."""
-        result = await self._call([
-            f"""You are a senior QA engineer. An unexpected situation occurred during testing.
-
-URL: {page.url}
-Error: {error_description}
-Flow context: {flow_context}
-
-What should I do to recover and continue testing?
-
-Options:
-- "dismiss": Click a close/dismiss button (specify selector)
-- "navigate_back": Go back to the previous page
-- "refresh": Refresh the page and retry
-- "skip": Skip this step and continue
-- "abort": Stop this flow (unrecoverable)
-
-Respond in JSON: {{"action": "dismiss|navigate_back|refresh|skip|abort", "target": "selector if needed", "reasoning": "why"}}"""
-        ])
+Options: dismiss (click close button), navigate_back, refresh, skip, abort
+Respond JSON: {{"action": "...", "reasoning": "..."}}"""])
 
         return result if isinstance(result, dict) else None

@@ -61,7 +61,7 @@ interface FlowStepDef {
 
 interface FlowStepResult {
   step: FlowStepDef;
-  status: "passed" | "failed" | "skipped";
+  status: "passed" | "failed" | "blocked" | "inconclusive" | "skipped";
   actual_url: string;
   screenshot_b64?: string;
   error?: string;
@@ -77,7 +77,7 @@ interface FlowStepResult {
 
 interface FlowResult {
   flow: { name: string; priority: number; steps: FlowStepDef[] };
-  status: "passed" | "failed" | "partial";
+  status: "passed" | "failed" | "blocked" | "partial";
   steps: FlowStepResult[];
   duration_ms: number;
   context_summary?: Record<string, unknown>;
@@ -172,9 +172,9 @@ export default function ScanResultPage() {
   const logIdRef = useRef(0);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Agent journey: flows grouped by page
+  // Agent journey: flows grouped by page, with screenshots
   const [pageJourney, setPageJourney] = useState<Array<{
-    url: string; title: string; flows: Array<{
+    url: string; title: string; screenshot?: string; flows: Array<{
       name: string; status: string; duration_ms: number; reasoning: string;
       action: string; target: string;
     }>;
@@ -231,6 +231,9 @@ export default function ScanResultPage() {
     es.addEventListener("page_complete", (e) => {
       const d = JSON.parse(e.data);
       setLiveNodes(prev => { const next = new Map(prev); const n = next.get(d.url); if (n) n.status = d.status === "failed" ? "failed" : "visited"; return next; });
+      if (d.screenshot) {
+        setPageJourney(prev => prev.map(p => p.url === d.url ? { ...p, screenshot: d.screenshot } : p));
+      }
     });
     es.addEventListener("flows_identified", (e) => {
       const d = JSON.parse(e.data);
@@ -374,7 +377,7 @@ function LiveView({ url, nodes, edges, flowSteps, log, counters, journey }: {
   url: string; nodes: Map<string, LiveNode>; edges: Array<{ from: string; to: string }>;
   flowSteps: LiveFlowStep[]; log: LogEntry[];
   counters: { pages: number; elements: number; bugs: number; actions: number; flows: number; flowsPassed: number };
-  journey: Array<{ url: string; title: string; flows: Array<{ name: string; status: string; duration_ms: number; reasoning: string; action: string; target: string }> }>;
+  journey: Array<{ url: string; title: string; screenshot?: string; flows: Array<{ name: string; status: string; duration_ms: number; reasoning: string; action: string; target: string }> }>;
 }) {
   const journeyRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (journeyRef.current) journeyRef.current.scrollTop = journeyRef.current.scrollHeight; }, [journey]);
@@ -403,63 +406,119 @@ function LiveView({ url, nodes, edges, flowSteps, log, counters, journey }: {
         ))}
       </div>
 
-      {/* Agent Journey -- the main view */}
-      <Label style={{ marginBottom: 16 }}>Agent Journey</Label>
-      <div ref={journeyRef} style={{ display: "flex", flexDirection: "column", gap: 12, maxHeight: 600, overflowY: "auto" }}>
-        {journey.length === 0 && (
-          <Card style={{ padding: "40px 24px", textAlign: "center" }}>
-            <div style={{ width: 24, height: 24, border: `2px solid ${T.border}`, borderTopColor: T.accent, borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 12px" }} />
-            <p style={{ color: T.textMuted, fontSize: 12 }}>Agent is navigating...</p>
-          </Card>
-        )}
+      {/* Two-column: Site Map + Agent Journey */}
+      <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 16, alignItems: "start" }}>
 
-        <AnimatePresence>
-          {journey.map((pg, pi) => (
-            <motion.div key={pg.url} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-              <Card>
-                {/* Page header */}
-                <div style={{ padding: "14px 20px", display: "flex", alignItems: "center", gap: 10, borderBottom: pg.flows.length > 0 ? `1px solid ${T.borderSubtle}` : "none" }}>
-                  <span style={{ color: T.blue, fontSize: 13, fontWeight: 600 }}>→</span>
-                  <span style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>{shortUrl(pg.url)}</span>
-                  {pg.flows.length > 0 && (
-                    <span style={{ marginLeft: "auto", fontSize: 10, color: T.textMuted }}>
-                      {pg.flows.filter(f => f.status === "passed").length}/{pg.flows.length} passed
+        {/* Left: Mini Site Map */}
+        <Card style={{ padding: "14px 16px", position: "sticky", top: 80 }}>
+          <Label style={{ marginBottom: 12 }}>Site Map</Label>
+          {Array.from(nodes.values()).length === 0 ? (
+            <p style={{ fontSize: 11, color: T.textMuted }}>Discovering...</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 500, overflowY: "auto" }}>
+              {Array.from(nodes.values()).map(node => {
+                const isCurrent = journey.length > 0 && journey[journey.length - 1]?.url === node.url;
+                const dotColor = node.bugs > 0 ? T.red : node.status === "visiting" ? T.blue : node.status === "visited" ? T.accent : T.textMuted;
+                return (
+                  <div key={node.url} style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", borderRadius: 6,
+                    background: isCurrent ? T.blueDim : "transparent",
+                    border: isCurrent ? `1px solid ${T.blue}30` : "1px solid transparent",
+                  }}>
+                    <span style={{ width: 5, height: 5, borderRadius: "50%", background: dotColor, flexShrink: 0,
+                      animation: node.status === "visiting" ? "pulse 1.5s infinite" : undefined }} />
+                    <span style={{ fontSize: 10, color: isCurrent ? T.text : T.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {shortPath(node.url)}
                     </span>
-                  )}
-                  {pg.flows.length === 0 && pi === journey.length - 1 && (
-                    <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ width: 5, height: 5, borderRadius: "50%", background: T.accent, animation: "pulse 1.5s infinite" }} />
-                      <span style={{ fontSize: 10, color: T.accent }}>testing...</span>
-                    </span>
-                  )}
-                </div>
-
-                {/* Flow results for this page */}
-                {pg.flows.length > 0 && (
-                  <div style={{ padding: "8px 20px 12px" }}>
-                    {pg.flows.map((fl, fi) => {
-                      const passed = fl.status === "passed";
-                      const color = passed ? T.accent : fl.status === "failed" ? T.red : T.yellow;
-                      return (
-                        <motion.div key={fi} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
-                          style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: fi < pg.flows.length - 1 ? `1px solid ${T.borderSubtle}` : "none" }}>
-                          <span style={{
-                            width: 18, height: 18, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                            fontSize: 10, fontWeight: 600, background: `${color}18`, color,
-                          }}>
-                            {passed ? "✓" : "✗"}
-                          </span>
-                          <span style={{ fontSize: 12, color: T.text, flex: 1 }}>{fl.name}</span>
-                          <span style={{ fontSize: 10, color: T.textMuted }}>{fl.duration_ms}ms</span>
-                        </motion.div>
-                      );
-                    })}
+                    {node.bugs > 0 && <span style={{ fontSize: 9, color: T.red, flexShrink: 0 }}>{node.bugs}</span>}
                   </div>
-                )}
+                );
+              })}
+            </div>
+          )}
+        </Card>
+
+        {/* Right: Agent Journey with screenshots */}
+        <div>
+          <Label style={{ marginBottom: 12 }}>Agent Journey</Label>
+          <div ref={journeyRef} style={{ display: "flex", flexDirection: "column", gap: 12, maxHeight: 600, overflowY: "auto" }}>
+            {journey.length === 0 && (
+              <Card style={{ padding: "40px 24px", textAlign: "center" }}>
+                <div style={{ width: 24, height: 24, border: `2px solid ${T.border}`, borderTopColor: T.accent, borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 12px" }} />
+                <p style={{ color: T.textMuted, fontSize: 12 }}>Agent is navigating...</p>
               </Card>
-            </motion.div>
-          ))}
-        </AnimatePresence>
+            )}
+
+            <AnimatePresence>
+              {journey.map((pg, pi) => (
+                <motion.div key={pg.url} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+                  <Card>
+                    {/* Page header */}
+                    <div style={{ padding: "14px 20px", display: "flex", alignItems: "center", gap: 10, borderBottom: `1px solid ${T.borderSubtle}` }}>
+                      <span style={{ color: T.blue, fontSize: 13, fontWeight: 600 }}>→</span>
+                      <span style={{ fontSize: 13, color: T.text, fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shortUrl(pg.url)}</span>
+                      {pg.flows.length > 0 && (
+                        <span style={{ fontSize: 10, color: T.textMuted, flexShrink: 0 }}>
+                          {pg.flows.filter(f => f.status === "passed").length}/{pg.flows.length} passed
+                        </span>
+                      )}
+                      {pg.flows.length === 0 && pi === journey.length - 1 && (
+                        <span style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                          <span style={{ width: 5, height: 5, borderRadius: "50%", background: T.accent, animation: "pulse 1.5s infinite" }} />
+                          <span style={{ fontSize: 10, color: T.accent }}>testing...</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Screenshot + Flows side by side */}
+                    <div style={{ display: "flex", gap: 0 }}>
+                      {/* Screenshot thumbnail */}
+                      {pg.screenshot && (
+                        <div style={{ width: 180, flexShrink: 0, borderRight: `1px solid ${T.borderSubtle}`, padding: 10 }}>
+                          <img
+                            src={`data:image/jpeg;base64,${pg.screenshot}`}
+                            alt={pg.url}
+                            style={{ width: "100%", borderRadius: 6, border: `1px solid ${T.borderSubtle}` }}
+                          />
+                        </div>
+                      )}
+
+                      {/* Flow results */}
+                      <div style={{ flex: 1, padding: pg.flows.length > 0 ? "8px 20px 12px" : "0" }}>
+                        {pg.flows.map((fl, fi) => {
+                          const passed = fl.status === "passed";
+                          const blocked = fl.status === "blocked";
+                          const color = passed ? T.accent : fl.status === "failed" ? T.red : blocked ? T.yellow : T.textMuted;
+                          const icon = passed ? "✓" : blocked ? "⊘" : "✗";
+                          return (
+                            <motion.div key={fi} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
+                              style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: fi < pg.flows.length - 1 ? `1px solid ${T.borderSubtle}` : "none" }}>
+                              <span style={{
+                                width: 18, height: 18, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                                fontSize: 10, fontWeight: 600, background: `${color}18`, color,
+                              }}>
+                                {icon}
+                              </span>
+                              <span style={{ fontSize: 12, color: T.text, flex: 1 }}>{fl.name}</span>
+                              {blocked && <span style={{ fontSize: 9, color: T.yellow, padding: "1px 6px", background: T.yellowDim, borderRadius: 4 }}>auth</span>}
+                              <span style={{ fontSize: 10, color: T.textMuted }}>{fl.duration_ms > 0 ? `${fl.duration_ms}ms` : ""}</span>
+                            </motion.div>
+                          );
+                        })}
+                        {pg.flows.length === 0 && !pg.screenshot && pi === journey.length - 1 && (
+                          <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ width: 14, height: 14, border: `2px solid ${T.border}`, borderTopColor: T.accent, borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+                            <span style={{ fontSize: 11, color: T.textMuted }}>Running tests...</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </Card>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -622,8 +681,8 @@ function FlowJourney({ result, expandedStep, setExpandedStep }: {
   result: FlowResult; expandedStep: string | null; setExpandedStep: (k: string | null) => void;
 }) {
   const fr = result;
-  const statusColor = fr.status === "passed" ? T.accent : fr.status === "failed" ? T.red : T.yellow;
-  const statusIcon = fr.status === "passed" ? "✓" : fr.status === "failed" ? "✗" : "~";
+  const statusColor = fr.status === "passed" ? T.accent : fr.status === "failed" ? T.red : fr.status === "blocked" ? T.yellow : T.textMuted;
+  const statusIcon = fr.status === "passed" ? "✓" : fr.status === "failed" ? "✗" : fr.status === "blocked" ? "⊘" : "~";
 
   return (
     <Card>
@@ -646,8 +705,8 @@ function FlowJourney({ result, expandedStep, setExpandedStep }: {
           {fr.steps.map((sr, si) => {
             const key = `${fr.flow.name}-${si}`;
             const isExpanded = expandedStep === key;
-            const stepColor = sr.status === "passed" ? T.accent : sr.status === "failed" ? T.red : T.textMuted;
-            const stepBg = sr.status === "passed" ? T.accentDim : sr.status === "failed" ? T.redDim : "rgba(82,82,91,0.08)";
+            const stepColor = sr.status === "passed" ? T.accent : sr.status === "failed" ? T.red : sr.status === "blocked" ? T.yellow : T.textMuted;
+            const stepBg = sr.status === "passed" ? T.accentDim : sr.status === "failed" ? T.redDim : sr.status === "blocked" ? T.yellowDim : "rgba(82,82,91,0.08)";
             const isAI = sr.ai_used && sr.ai_used !== "Heuristic" && sr.ai_used !== "not_found";
 
             return (
