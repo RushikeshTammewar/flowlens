@@ -128,19 +128,22 @@ class QAAgent:
         self._functional.attach_listeners(page)
         await install_request_tracker(page)
 
-        # Stage 1: Understand the site
+        # Stage 1: Understand the site (with timeout -- must not block scan)
         try:
             await page.goto(self.base_url, wait_until="domcontentloaded", timeout=20000)
             await wait_for_stable_page(page, timeout_ms=6000)
 
             if self._ai.available:
                 self._emit("site_analysis", {"status": "analyzing site..."})
-                ctx = await self._ai.understand_site(page)
-                self._emit("site_analysis", {
-                    "site_type": ctx.site_type,
-                    "features": ctx.main_features,
-                    "critical_paths": ctx.critical_paths,
-                })
+                try:
+                    ctx = await asyncio.wait_for(self._ai.understand_site(page), timeout=45)
+                    self._emit("site_analysis", {
+                        "site_type": ctx.site_type,
+                        "features": ctx.main_features,
+                        "critical_paths": ctx.critical_paths,
+                    })
+                except asyncio.TimeoutError:
+                    self._emit("site_analysis", {"status": "skipped (timeout)", "site_type": "unknown"})
         except Exception:
             pass
 

@@ -97,9 +97,9 @@ class GeminiEngine:
             )
 
         try:
-            resp = await asyncio.to_thread(_sync)
+            resp = await asyncio.wait_for(asyncio.to_thread(_sync), timeout=30)
             text = resp.text if resp and resp.text else None
-        except Exception:
+        except (asyncio.TimeoutError, Exception):
             return None
 
         if not text:
