@@ -181,6 +181,8 @@ export default function ScanResultPage() {
   }>>([]);
   const [currentPage, setCurrentPage] = useState<string>("");
 
+  const [agentThought, setAgentThought] = useState<string>("");
+
   const [authRequired, setAuthRequired] = useState(false);
   const [authLoginUrl, setAuthLoginUrl] = useState("");
   const [authFrame, setAuthFrame] = useState<string | null>(null);
@@ -300,7 +302,15 @@ export default function ScanResultPage() {
       const d = JSON.parse(e.data);
       for (const err of (d.js_errors || []).slice(0, 2)) addLog(`JS Error: ${err}`, "bug");
     });
-    es.addEventListener("scan_complete", (e) => { const d = JSON.parse(e.data); addLog(`Scan complete: ${d.pages} pages, ${d.bugs} bugs`, "complete"); es.close(); });
+    es.addEventListener("agent_thinking", (e) => {
+      const d = JSON.parse(e.data);
+      setAgentThought(d.thought || "");
+    });
+    es.addEventListener("site_analysis", (e) => {
+      const d = JSON.parse(e.data);
+      if (d.core_product) addLog(`Site: ${d.core_product}`, "flow");
+    });
+    es.addEventListener("scan_complete", (e) => { const d = JSON.parse(e.data); setAgentThought(""); addLog(`Scan complete: ${d.pages} pages, ${d.bugs} bugs`, "complete"); es.close(); });
     es.addEventListener("scan_failed", (e) => { const d = JSON.parse(e.data); addLog(`Scan failed: ${d.error}`, "bug"); es.close(); });
     es.onerror = () => es.close();
     return () => { es.close(); eventSourceRef.current = null; };
@@ -337,7 +347,7 @@ export default function ScanResultPage() {
       <main style={{ maxWidth: 960, margin: "0 auto", padding: "0 24px" }}>
         {!data ? <Loading /> :
           data.status === "failed" ? <Failed url={data.url} error={data.errors?.[0]} /> :
-          isRunning ? <LiveView url={data.url} nodes={liveNodes} edges={liveEdges} flowSteps={liveFlowSteps} log={logEntries} counters={counters} journey={pageJourney} /> :
+          isRunning ? <LiveView url={data.url} nodes={liveNodes} edges={liveEdges} flowSteps={liveFlowSteps} log={logEntries} counters={counters} journey={pageJourney} thought={agentThought} /> :
           <Report data={data} />
         }
       </main>
@@ -373,11 +383,12 @@ export default function ScanResultPage() {
    LIVE SCAN VIEW
    ═══════════════════════════════════════════════════════════ */
 
-function LiveView({ url, nodes, edges, flowSteps, log, counters, journey }: {
+function LiveView({ url, nodes, edges, flowSteps, log, counters, journey, thought }: {
   url: string; nodes: Map<string, LiveNode>; edges: Array<{ from: string; to: string }>;
   flowSteps: LiveFlowStep[]; log: LogEntry[];
   counters: { pages: number; elements: number; bugs: number; actions: number; flows: number; flowsPassed: number };
   journey: Array<{ url: string; title: string; screenshot?: string; flows: Array<{ name: string; status: string; duration_ms: number; reasoning: string; action: string; target: string }> }>;
+  thought: string;
 }) {
   const journeyRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (journeyRef.current) journeyRef.current.scrollTop = journeyRef.current.scrollHeight; }, [journey]);
@@ -405,6 +416,24 @@ function LiveView({ url, nodes, edges, flowSteps, log, counters, journey }: {
           </div>
         ))}
       </div>
+
+      {/* Agent thinking indicator */}
+      {thought && (
+        <motion.div
+          key={thought}
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          style={{
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "10px 16px", marginBottom: 16,
+            background: T.purpleDim, border: `1px solid ${T.purple}25`,
+            borderRadius: 8, fontSize: 12, color: T.purple,
+          }}
+        >
+          <span style={{ width: 14, height: 14, border: `2px solid ${T.purple}40`, borderTopColor: T.purple, borderRadius: "50%", animation: "spin 1s linear infinite", flexShrink: 0 }} />
+          <span>{thought}</span>
+        </motion.div>
+      )}
 
       {/* Two-column: Site Map + Agent Journey */}
       <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 16, alignItems: "start" }}>

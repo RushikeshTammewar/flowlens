@@ -134,16 +134,20 @@ class QAAgent:
             await wait_for_stable_page(page, timeout_ms=6000)
 
             if self._ai.available:
-                self._emit("site_analysis", {"status": "analyzing site..."})
+                self._emit("agent_thinking", {"thought": "Understanding what this site is and what to test..."})
                 try:
                     ctx = await asyncio.wait_for(self._ai.understand_site(page), timeout=45)
+                    core = ctx.core_product or ctx.site_type
+                    features = ", ".join(ctx.main_features[:3]) if ctx.main_features else "analyzing"
+                    self._emit("agent_thinking", {"thought": f"Site identified: {core}. Key features: {features}"})
                     self._emit("site_analysis", {
                         "site_type": ctx.site_type,
+                        "core_product": ctx.core_product,
                         "features": ctx.main_features,
                         "critical_paths": ctx.critical_paths,
                     })
                 except asyncio.TimeoutError:
-                    self._emit("site_analysis", {"status": "skipped (timeout)", "site_type": "unknown"})
+                    self._emit("agent_thinking", {"thought": "Site analysis timed out, proceeding with heuristics"})
         except Exception:
             pass
 
@@ -228,9 +232,14 @@ class QAAgent:
         # Stage 2: Assess page
         page_assessment = {}
         if self._ai.available:
+            self._emit("agent_thinking", {"thought": f"Assessing page: what can I test here?", "page": node.url})
             page_assessment = await self._ai.assess_page(page, elements_summary)
+            purpose = page_assessment.get("page_purpose", "")
+            if purpose:
+                self._emit("agent_thinking", {"thought": f"Page purpose: {purpose}", "page": node.url})
             visual_issues = page_assessment.get("visual_issues", [])
             if visual_issues:
+                self._emit("agent_thinking", {"thought": f"Visual issues spotted: {', '.join(str(v)[:40] for v in visual_issues[:2])}", "page": node.url})
                 for issue in visual_issues[:3]:
                     self._ai.site_context.key_findings.append(f"Visual: {issue}")
 
@@ -238,7 +247,11 @@ class QAAgent:
         already_tested = list(self._state.tested_actions)[:20]
         journeys = []
         if self._ai.available:
+            self._emit("agent_thinking", {"thought": "Planning test journeys for this page...", "page": node.url})
             journeys = await self._ai.plan_journeys(page, elements_summary, page_assessment, already_tested)
+            if journeys:
+                names = [j.get("name", "?") for j in journeys[:4]]
+                self._emit("agent_thinking", {"thought": f"Will test: {', '.join(names)}", "page": node.url})
 
         if not journeys:
             journeys = self._heuristic_journeys(elements, node)
@@ -508,6 +521,7 @@ class QAAgent:
 
             # Stage 5: Nuanced verification
             if self._ai.available and verify:
+                self._emit("agent_thinking", {"thought": f"Verifying: {verify[:60]}", "page": page.url})
                 result = await self._ai.verify_step(page, f"{action}: {target or query}", verify)
                 status = result.get("status", "inconclusive")
                 error = result.get("reason", "")
