@@ -28,6 +28,7 @@ class SiteContext:
     """Accumulated understanding of the site, built over the scan."""
     site_type: str = ""
     target_user: str = ""
+    core_product: str = ""
     main_features: list[str] = field(default_factory=list)
     critical_paths: list[str] = field(default_factory=list)
     requires_auth_for: list[str] = field(default_factory=list)
@@ -38,8 +39,10 @@ class SiteContext:
 
     def summary(self) -> str:
         parts = [f"Site type: {self.site_type or 'unknown'}"]
+        if self.core_product:
+            parts.append(f"Core product: {self.core_product}")
         if self.main_features:
-            parts.append(f"Main features: {', '.join(self.main_features[:5])}")
+            parts.append(f"Features: {', '.join(self.main_features[:5])}")
         parts.append(f"Auth: {self.auth_state}")
         parts.append(f"Pages visited: {len(self.pages_visited)}")
         if self.journeys_completed:
@@ -141,20 +144,22 @@ Look at this website homepage and tell me:
 URL: {page.url}
 Title: {await page.title()}
 
-1. site_type: What kind of site is this? (saas, ecommerce, news, blog, docs, social, portfolio, corporate, other)
+1. site_type: What kind of site is this? (saas, ecommerce, news, blog, docs, social, qa_forum, portfolio, corporate, other)
 2. target_user: Who uses this site? (1 sentence)
-3. main_features: What are the 3-5 most important features visible? (list)
-4. critical_paths: What are the 2-3 most critical user journeys a QA engineer must test? (list of short descriptions)
+3. core_product: What is the ONE main thing users come here to do? (e.g. "search and read Q&A", "buy products", "read news articles", "manage projects")
+4. main_features: What are the 3-5 most important features visible? Start with the CORE feature. (list)
+5. critical_paths: What are the 2-3 most critical user journeys a QA engineer MUST test? These should be about the core product, NOT about footer links or legal pages. (list)
 5. requires_auth: What features seem to require login? (list)
 6. public_testable: What can be tested WITHOUT logging in? (list)
 
 Respond in JSON:
-{{"site_type": "...", "target_user": "...", "main_features": [...], "critical_paths": [...], "requires_auth": [...], "public_testable": [...]}}""")
+{{"site_type": "...", "target_user": "...", "core_product": "...", "main_features": [...], "critical_paths": [...], "requires_auth": [...], "public_testable": [...]}}""")
 
         result = await self._call(parts)
         if isinstance(result, dict) and "site_type" in result:
             self.site_context.site_type = result.get("site_type", "unknown")
             self.site_context.target_user = result.get("target_user", "")
+            self.site_context.core_product = result.get("core_product", "")
             self.site_context.main_features = result.get("main_features", [])
             self.site_context.critical_paths = result.get("critical_paths", [])
             self.site_context.requires_auth_for = result.get("requires_auth", [])
@@ -229,19 +234,32 @@ Already tested: {already_tested[:15]}
 Elements on page:
 {elements_summary}
 
-Plan 2-4 USER JOURNEYS. A journey is a complete user task with multiple steps:
+Plan 2-4 USER JOURNEYS. Think like a senior QA engineer: what are the MOST IMPORTANT things a real user does on this site?
+
+PRIORITY ORDER (test these FIRST):
+1. SEARCH — if there's a search box, this is ALWAYS the #1 test. Type a realistic query, verify results load, click a result.
+2. CORE PRODUCT FEATURE — the main thing users come to this site for:
+   - Q&A site (Quora) → search questions, read answers
+   - E-commerce → search products, view product details
+   - News → read articles, browse categories
+   - SaaS → try the main feature, check pricing
+   - Docs → search docs, read a guide
+3. FORMS — signup forms, contact forms, newsletter signup. Fill and submit.
+4. NAVIGATION — main menu links, category browsing. Click through and verify.
+5. NEVER test footer links, legal pages, privacy policies, or language selectors as primary journeys. Those are the LOWEST priority.
+
+A journey has 2-4 STEPS (not just one click!):
 - "Search and explore" = type query → check results → click a result → verify detail page
+- "Test core feature" = interact with main feature → verify it works → check the output
 - "Fill and submit form" = fill fields → submit → verify success/error message
-- "Browse section" = click nav link → verify page loads → check content → click sub-link
 
 RULES:
-- Each journey has 2-4 STEPS (not just one click!)
 - Each step has: action (search/click/fill_form/verify), element_index, verify (what to check)
-- For search steps, include a "query" field with a realistic search term for this site
+- For search steps, include a "query" field with a realistic search term for THIS SPECIFIC SITE
 - DO NOT plan journeys for auth-required features if we're not logged in
 - DO NOT interact with disabled elements (indices: {disabled})
-- Focus on what we CAN test. Report auth-required features separately.
-- A journey that just clicks a link and stops is NOT a journey — follow through!
+- A journey testing footer links or Terms of Service is WORTHLESS — don't suggest it
+- Focus on what a REAL USER would actually DO on this site
 
 Respond JSON:
 {{"journeys": [
