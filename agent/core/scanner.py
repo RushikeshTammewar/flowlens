@@ -49,9 +49,12 @@ class FlowLensScanner:
 
     async def scan(self) -> CrawlResult:
         self.result.started_at = datetime.now()
+        print(f"[DEBUG] FlowLensScanner.scan() - Starting scan for {self.url}", flush=True)
 
         async with async_playwright() as pw:
+            print(f"[DEBUG] Launching browser (headless={not self._headful})...", flush=True)
             browser = await pw.chromium.launch(headless=not self._headful)
+            print(f"[DEBUG] Browser launched successfully!", flush=True)
 
             for viewport_name in self.viewports:
                 viewport_config = VIEWPORTS.get(viewport_name, VIEWPORTS["desktop"])
@@ -60,15 +63,19 @@ class FlowLensScanner:
                     user_agent=_user_agent(viewport_name),
                 )
                 page = await ctx.new_page()
+                print(f"[DEBUG] Page created for viewport={viewport_name}", flush=True)
 
                 # Apply stealth to avoid bot detection
                 try:
                     from playwright_stealth import Stealth
+                    print(f"[DEBUG] Applying playwright-stealth...", flush=True)
                     stealth = Stealth()
                     await stealth.apply_stealth_async(page)
-                except Exception:
-                    pass
+                    print(f"[DEBUG] Stealth applied successfully!", flush=True)
+                except Exception as e:
+                    print(f"[DEBUG] Stealth failed: {e}", flush=True)
 
+                print(f"[DEBUG] Creating QAAgent...", flush=True)
                 agent = QAAgent(
                     base_url=self.url,
                     max_pages=self.max_pages,
@@ -81,7 +88,9 @@ class FlowLensScanner:
                 )
 
                 try:
+                    print(f"[DEBUG] Calling agent.run() for viewport={viewport_name}...", flush=True)
                     state = await agent.run(page, viewport=viewport_name)
+                    print(f"[DEBUG] agent.run() completed! Visited {len(state.graph.nodes)} pages", flush=True)
                 except Exception as e:
                     if self._on_progress:
                         self._on_progress("scan_error", {"error": str(e)[:300], "viewport": viewport_name})
