@@ -131,11 +131,11 @@ class QAAgent:
 
         # Stage 1: Understand the site (with timeout -- must not block scan)
         try:
-            print(f"[DEBUG] QAAgent.run() - Navigating to {self.base_url}...", flush=True)
+            self._emit("debug", {"msg": f"Navigating to {self.base_url}..."})
             await page.goto(self.base_url, wait_until="domcontentloaded", timeout=20000)
-            print(f"[DEBUG] Page loaded, waiting for stability...", flush=True)
+            self._emit("debug", {"msg": "Page loaded, waiting for stability..."})
             await wait_for_stable_page(page, timeout_ms=6000)
-            print(f"[DEBUG] Page stable! Proceeding with site understanding...", flush=True)
+            self._emit("debug", {"msg": "Page stable! Proceeding with site understanding..."})
 
             if self._ai.available:
                 self._emit("agent_thinking", {"thought": "Understanding what this site is and what to test..."})
