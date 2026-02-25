@@ -63,9 +63,10 @@ class FlowLensScanner:
 
                 # Apply stealth to avoid bot detection
                 try:
-                    from playwright_stealth import stealth_async
-                    await stealth_async(page)
-                except ImportError:
+                    from playwright_stealth import Stealth
+                    stealth = Stealth()
+                    await stealth.apply_stealth_async(page)
+                except Exception:
                     pass
 
                 agent = QAAgent(
