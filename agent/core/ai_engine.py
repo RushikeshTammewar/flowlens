@@ -30,26 +30,24 @@ class AIDecision:
 
 
 class GeminiEngine:
-    """Wraps all Gemini API interactions for the QA agent."""
+    """Wraps all Gemini API interactions for the QA agent.
 
-    def __init__(self, model_name: str = "gemini-2.0-flash"):
+    Uses the new google-genai SDK with gemini-2.5-flash.
+    """
+
+    def __init__(self, model_name: str = "gemini-2.5-flash"):
         self._model_name = model_name
-        self._model = None
+        self._client = None
         self._call_count = 0
-        self._total_tokens = 0
 
-    def _ensure_model(self):
-        if self._model:
+    def _ensure_client(self):
+        if self._client:
             return
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY not set")
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        self._model = genai.GenerativeModel(
-            self._model_name,
-            generation_config={"temperature": 0.0},
-        )
+        from google import genai
+        self._client = genai.Client(api_key=api_key)
 
     @property
     def available(self) -> bool:
@@ -64,14 +62,28 @@ class GeminiEngine:
         if not self.available:
             return None
 
-        self._ensure_model()
+        self._ensure_client()
         self._call_count += 1
 
         def _sync():
-            resp = self._model.generate_content(parts)
+            contents = []
+            for part in parts:
+                if isinstance(part, str):
+                    contents.append(part)
+                elif isinstance(part, dict) and "mime_type" in part:
+                    from google.genai import types
+                    contents.append(types.Part.from_bytes(data=base64.b64decode(part["data"]), mime_type=part["mime_type"]))
+            resp = self._client.models.generate_content(
+                model=self._model_name,
+                contents=contents,
+            )
             return resp.text if resp and resp.text else None
 
-        text = await asyncio.to_thread(_sync)
+        try:
+            text = await asyncio.to_thread(_sync)
+        except Exception:
+            return None
+
         if not text:
             return None
 

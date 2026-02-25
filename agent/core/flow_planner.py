@@ -337,16 +337,13 @@ async def identify_flows(graph: SiteGraph) -> list[Flow]:
         return _heuristic_flows(graph)
 
     try:
-        import google.generativeai as genai
+        from google import genai
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
-            generation_config={"temperature": 0.0},
-        )
+        client = genai.Client(api_key=api_key)
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
         prompt = _graph_to_prompt(graph)
-        response = await _call_gemini_async(model, prompt)
+        response = await _call_gemini_async(client, model_name, prompt)
         if response:
             flows = _parse_flows_response(response)
             if flows:
@@ -358,13 +355,13 @@ async def identify_flows(graph: SiteGraph) -> list[Flow]:
     return _heuristic_flows(graph)
 
 
-async def _call_gemini_async(model, prompt: str) -> str | None:
-    """Call Gemini API. Sync API wrapped for async compatibility."""
+async def _call_gemini_async(client, model_name: str, prompt: str) -> str | None:
+    """Call Gemini API via the new google-genai SDK."""
     import asyncio
 
     def _sync_call():
         try:
-            resp = model.generate_content(prompt)
+            resp = client.models.generate_content(model=model_name, contents=prompt)
             if resp and resp.text:
                 return resp.text
         except Exception:
