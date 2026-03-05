@@ -46,6 +46,41 @@ def _ensure_google_api_key():
         os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
 
 
+def _write_chrome_prefs(user_data_dir: str):
+    """Write Chrome preferences that disable the password manager entirely.
+
+    Command-line flags alone don't suppress the breach-detection popup
+    in headful mode. Setting profile-level prefs does.
+    """
+    import json, os
+    default_dir = os.path.join(user_data_dir, "Default")
+    os.makedirs(default_dir, exist_ok=True)
+    prefs_path = os.path.join(default_dir, "Preferences")
+
+    prefs: dict = {}
+    if os.path.exists(prefs_path):
+        try:
+            with open(prefs_path) as f:
+                prefs = json.load(f)
+        except Exception:
+            prefs = {}
+
+    prefs.setdefault("credentials_enable_service", False)
+    prefs.setdefault("credentials_enable_autosignin", False)
+    prefs.setdefault("profile", {})
+    prefs["profile"]["password_manager_enabled"] = False
+    prefs["profile"]["password_manager_leak_detection"] = False
+    prefs.setdefault("password_manager", {})
+    prefs["password_manager"]["password_leak_detection_enabled"] = False
+    prefs["password_manager"]["credentials_enable_service"] = False
+    prefs.setdefault("safebrowsing", {})
+    prefs["safebrowsing"]["enabled"] = False
+    prefs["safebrowsing"]["enhanced"] = False
+
+    with open(prefs_path, "w") as f:
+        json.dump(prefs, f)
+
+
 class NavigationEngine:
     """LLM-driven browser navigation via Browser-Use.
 
@@ -104,23 +139,41 @@ class NavigationEngine:
         """Launch Chrome via Browser-Use CDP."""
         from browser_use import Browser
 
+        user_data_dir = self._user_data_dir
+        if not user_data_dir:
+            import tempfile
+            user_data_dir = tempfile.mkdtemp(prefix="flowlens-chrome-")
+            self._tmp_user_data_dir = user_data_dir
+
+        _write_chrome_prefs(user_data_dir)
+
         kwargs: dict[str, Any] = {
             "headless": self._headless,
             "keep_alive": True,
             "disable_security": True,
+            "user_data_dir": user_data_dir,
             "args": [
                 "--disable-features=PasswordCheck,PasswordLeakDetection,"
-                "PasswordManagerOnboarding,PasswordSaving",
+                "PasswordManagerOnboarding,PasswordSaving,"
+                "PasswordReuseDetectionEnabled,"
+                "SafeBrowsingEnhancedProtection,"
+                "SafeBrowsingBulkPasswordCheck,"
+                "IdentityStatusDialog,PasswordStrength,"
+                "ChromePasswordManagerPromo",
+                "--disable-sync",
+                "--disable-background-networking",
+                "--password-store=basic",
                 "--no-default-browser-check",
+                "--no-first-run",
                 "--disable-popup-blocking",
                 "--disable-prompt-on-repost",
                 "--disable-infobars",
+                "--disable-translate",
+                "--disable-client-side-phishing-detection",
             ],
         }
         if self._storage_state:
             kwargs["storage_state"] = self._storage_state
-        if self._user_data_dir:
-            kwargs["user_data_dir"] = self._user_data_dir
 
         self._browser = Browser(**kwargs)
         await self._browser.start()
