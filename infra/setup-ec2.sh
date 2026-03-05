@@ -9,7 +9,19 @@ echo "=== FlowLens EC2 Setup ==="
 
 # System packages
 sudo apt-get update -qq
-sudo apt-get install -y -qq python3 python3-venv python3-pip git nginx certbot python3-certbot-nginx
+sudo apt-get install -y -qq \
+    software-properties-common git nginx certbot python3-certbot-nginx \
+    xvfb
+
+# Python 3.12 (browser-use requires 3.11+)
+if ! python3.12 --version 2>/dev/null; then
+    echo "--- Installing Python 3.12 ---"
+    sudo add-apt-repository -y ppa:deadsnakes/ppa
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq python3.12 python3.12-venv python3.12-dev
+fi
+
+PYTHON=python3.12
 
 # Clone repo
 if [ ! -d ~/flowlens ]; then
@@ -18,9 +30,12 @@ fi
 cd ~/flowlens
 
 # Python venv
-python3 -m venv .venv
+$PYTHON -m venv .venv
 source .venv/bin/activate
+pip install -q --upgrade pip
 pip install -q -r backend/requirements.txt -r agent/requirements.txt
+
+# Playwright for remote browser auth feature
 python -m playwright install chromium --with-deps
 
 # Systemd service
@@ -62,9 +77,10 @@ echo "=== Setup complete ==="
 echo "Backend running at http://$(curl -s ifconfig.me):8000"
 echo ""
 echo "Next steps:"
-echo "  1. Point api.flowlens.in DNS to this server's IP"
-echo "  2. Run: sudo certbot --nginx -d api.flowlens.in"
-echo "  3. Add these GitHub secrets for CI/CD:"
+echo "  1. Create .env with GEMINI_API_KEY and GEMINI_MODEL"
+echo "  2. Point api.flowlens.in DNS to this server's IP"
+echo "  3. Run: sudo certbot --nginx -d api.flowlens.in"
+echo "  4. Add these GitHub secrets for CI/CD:"
 echo "     EC2_HOST  = $(curl -s ifconfig.me)"
 echo "     EC2_USER  = ubuntu"
 echo "     EC2_SSH_KEY = (paste your private key)"

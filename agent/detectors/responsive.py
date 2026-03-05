@@ -1,19 +1,49 @@
-"""Tier 2 detector: mobile/responsive layout issues."""
+"""Tier 2 detector: mobile/responsive layout issues.
+
+v2: uses execute_javascript (CDP) instead of Playwright page.evaluate.
+"""
 
 from __future__ import annotations
+
+from typing import Any, Callable, Awaitable
+
 from agent.models.types import BugFinding, Severity, Category, Confidence
+
+ExecuteJS = Callable[[str], Awaitable[Any]]
+
+_OVERFLOW = """document.documentElement.scrollWidth > document.documentElement.clientWidth + 5"""
+
+_SMALL_TARGETS = """(() => {
+    const els = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
+    const small = [];
+    for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && (r.width < 44 || r.height < 44)) {
+            small.push({
+                tag: el.tagName.toLowerCase(),
+                text: (el.textContent || '').trim().substring(0, 40),
+                width: Math.round(r.width),
+                height: Math.round(r.height)
+            });
+        }
+    }
+    return small;
+})()"""
+
+_SMALL_FONT = """(() => {
+    const body = document.body;
+    if (!body) return false;
+    const fontSize = parseFloat(window.getComputedStyle(body).fontSize);
+    return fontSize < 14;
+})()"""
 
 
 class ResponsiveDetector:
 
-    async def detect(self, page, page_url: str, viewport: str) -> list[BugFinding]:
-        """Check for responsive design issues. Most relevant on mobile viewport."""
-        findings = []
+    async def detect(self, execute_js: ExecuteJS, page_url: str, viewport: str) -> list[BugFinding]:
+        findings: list[BugFinding] = []
 
-        # 1. Horizontal overflow
-        has_overflow = await page.evaluate("""() => {
-            return document.documentElement.scrollWidth > document.documentElement.clientWidth + 5;
-        }""")
+        has_overflow = await execute_js(_OVERFLOW)
         if has_overflow:
             findings.append(BugFinding(
                 title="Horizontal scroll detected",
@@ -22,28 +52,12 @@ class ResponsiveDetector:
                 confidence=Confidence.MEDIUM,
                 page_url=page_url,
                 viewport=viewport,
-                description="Page content extends beyond viewport width, causing unwanted horizontal scrolling.",
+                description="Page content extends beyond viewport width.",
             ))
 
-        # 2. Small touch targets (only check on mobile)
         if viewport == "mobile":
-            small_targets = await page.evaluate("""() => {
-                const els = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
-                const small = [];
-                for (const el of els) {
-                    const rect = el.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44)) {
-                        small.push({
-                            tag: el.tagName.toLowerCase(),
-                            text: (el.textContent || '').trim().substring(0, 40),
-                            width: Math.round(rect.width),
-                            height: Math.round(rect.height),
-                        });
-                    }
-                }
-                return small;
-            }""")
-            if len(small_targets) > 5:
+            small_targets = await execute_js(_SMALL_TARGETS)
+            if isinstance(small_targets, list) and len(small_targets) > 5:
                 findings.append(BugFinding(
                     title=f"{len(small_targets)} touch targets below 44x44px",
                     category=Category.RESPONSIVE,
@@ -51,19 +65,11 @@ class ResponsiveDetector:
                     confidence=Confidence.MEDIUM,
                     page_url=page_url,
                     viewport=viewport,
-                    description="Multiple interactive elements are too small for comfortable mobile touch interaction.",
+                    description="Multiple interactive elements are too small for mobile touch.",
                     evidence={"count": len(small_targets), "examples": small_targets[:5]},
                 ))
 
-        # 3. Text too small on mobile
-        if viewport == "mobile":
-            small_text = await page.evaluate("""() => {
-                const body = document.body;
-                if (!body) return false;
-                const style = window.getComputedStyle(body);
-                const fontSize = parseFloat(style.fontSize);
-                return fontSize < 14;
-            }""")
+            small_text = await execute_js(_SMALL_FONT)
             if small_text:
                 findings.append(BugFinding(
                     title="Body font size below 14px on mobile",
@@ -72,7 +78,7 @@ class ResponsiveDetector:
                     confidence=Confidence.MEDIUM,
                     page_url=page_url,
                     viewport=viewport,
-                    description="Base font size is too small for comfortable mobile reading.",
+                    description="Base font size is too small for mobile reading.",
                 ))
 
         return findings

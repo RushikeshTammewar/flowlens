@@ -22,7 +22,8 @@ def print_report(result: CrawlResult):
         duration = f" in {secs:.1f}s"
 
     # Header
-    score_color = "green" if result.health_score >= 80 else "yellow" if result.health_score >= 60 else "red"
+    score = result.health_score if result.health_score is not None else 0
+    score_color = "green" if score >= 80 else "yellow" if score >= 60 else "red"
     header = Text()
     header.append("\n FlowLens Scan Report\n", style="bold")
     header.append(f" {result.url}\n", style="dim")
@@ -33,7 +34,7 @@ def print_report(result: CrawlResult):
     console.print()
     score_text = Text()
     score_text.append(f"  Health Score: ", style="bold")
-    score_text.append(f"{result.health_score}/100", style=f"bold {score_color}")
+    score_text.append(f"{score}/100", style=f"bold {score_color}")
     console.print(score_text)
     console.print()
 

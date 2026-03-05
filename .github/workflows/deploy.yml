@@ -29,23 +29,31 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            echo "--- Updating .env with secrets ---"
+            grep -q '^GEMINI_API_KEY=' .env 2>/dev/null && \
+              sed -i 's/^GEMINI_API_KEY=.*/GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}/' .env || \
+              echo 'GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}' >> .env
+            grep -q '^GEMINI_MODEL=' .env 2>/dev/null && \
+              sed -i 's/^GEMINI_MODEL=.*/GEMINI_MODEL=${{ secrets.GEMINI_MODEL }}/' .env || \
+              echo 'GEMINI_MODEL=${{ secrets.GEMINI_MODEL }}' >> .env
+
             echo "--- Installing Python dependencies ---"
             source .venv/bin/activate
             pip install -q -r backend/requirements.txt -r agent/requirements.txt
 
-            echo "--- Installing Playwright browsers ---"
+            echo "--- Installing Playwright for remote auth ---"
             python -m playwright install chromium --with-deps 2>/dev/null || true
 
             echo "--- Restarting backend service ---"
             sudo systemctl restart flowlens-api
 
             echo "--- Health check ---"
-            for i in $(seq 1 20); do
+            for i in $(seq 1 30); do
               if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
                 echo "Backend is healthy"
                 exit 0
               fi
-              sleep 1
+              sleep 2
             done
             echo "Health check failed" && exit 1
 

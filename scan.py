@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FlowLens CLI Scanner
-Usage: python scan.py https://example.com [--pages 20] [--viewport desktop,mobile] [--headful]
+FlowLens v2 CLI Scanner — Browser-Use Powered
+Usage: python scan.py https://example.com [--pages 20] [--viewport desktop,mobile]
 """
 
 import argparse
@@ -16,18 +16,23 @@ from agent.core.report import print_report
 
 def main():
     parser = argparse.ArgumentParser(
-        description="FlowLens — AI QA Engineer for websites",
+        description="FlowLens v2 — AI QA Engineer (Browser-Use powered)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  python scan.py https://example.com\n"
-               "  python scan.py https://myapp.com --pages 10 --headful\n"
-               "  python scan.py https://dashboard.app --headful   # for sites requiring login",
+               "  python scan.py https://myapp.com --pages 10\n"
+               "  python scan.py https://dashboard.app --no-headless\n"
+               "  python scan.py https://shop.com --storage-state auth.json",
     )
     parser.add_argument("url", help="Website URL to scan")
-    parser.add_argument("--pages", type=int, default=20, help="Max pages to crawl (default: 20)")
-    parser.add_argument("--viewport", default="desktop,mobile", help="Viewports to test (default: desktop,mobile)")
-    parser.add_argument("--headful", action="store_true", help="Run browser visibly (required for login with OTP/2FA)")
-    parser.add_argument("--json", action="store_true", help="Output results as JSON instead of table")
+    parser.add_argument("--pages", type=int, default=20, help="Max pages to test (default: 20)")
+    parser.add_argument("--viewport", default="desktop", help="Viewports: desktop,mobile (default: desktop)")
+    parser.add_argument("--no-headless", action="store_true", help="Show browser window")
+    parser.add_argument("--storage-state", type=str, default=None, help="Path to auth cookies JSON")
+    parser.add_argument("--user-data-dir", type=str, default=None, help="Chrome profile directory")
+    parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    # Legacy compat
+    parser.add_argument("--headful", action="store_true", help=argparse.SUPPRESS)
 
     args = parser.parse_args()
 
@@ -36,16 +41,21 @@ def main():
         url = f"https://{url}"
 
     viewports = [v.strip() for v in args.viewport.split(",")]
+    headless = not (args.no_headless or args.headful)
 
-    print(f"\n  FlowLens scanning {url}")
-    print(f"  Max pages: {args.pages} | Viewports: {', '.join(viewports)}", end="")
-    if args.headful:
-        print(" | Mode: headful (visible browser)")
-    else:
-        print(" | Mode: headless (login window opens if needed)")
+    print(f"\n  FlowLens v2 scanning {url}")
+    print(f"  Max pages: {args.pages} | Viewports: {', '.join(viewports)}")
+    print(f"  Navigation: Browser-Use (CDP + LLM)")
+    if not headless:
+        print(f"  Browser: visible")
+    if args.storage_state:
+        print(f"  Auth: loading from {args.storage_state}")
     print()
 
-    result = asyncio.run(run_scan(url, args.pages, viewports, args.headful))
+    result = asyncio.run(run_scan(
+        url, args.pages, viewports, headless,
+        args.storage_state, args.user_data_dir,
+    ))
 
     if args.json:
         output = {
@@ -65,9 +75,6 @@ def main():
 def _cli_progress(event_type: str, data: dict):
     if event_type == "visiting_page":
         print(f"   [{data.get('page_number', '?')}/{data.get('total_discovered', '?')}] Visiting {data.get('url', '')[:80]}")
-    elif event_type == "elements_found":
-        total = data.get("total", 0)
-        print(f"         Found {total} interactive elements")
     elif event_type == "bug_found":
         print(f"         [BUG] {data.get('severity', '')} {data.get('title', '')[:80]}")
     elif event_type == "page_discovered":
@@ -75,40 +82,31 @@ def _cli_progress(event_type: str, data: dict):
         if via:
             print(f"         -> Discovered {data.get('url', '')[:60]} (via {via})")
     elif event_type == "scan_complete":
-        print(f"\n   Done: {data.get('pages', 0)} pages, {data.get('bugs', 0)} bugs, {data.get('actions_taken', 0)} actions\n")
+        print(f"\n   Done: {data.get('pages', 0)} pages, {data.get('bugs', 0)} bugs, "
+              f"{data.get('flows', 0)} flows ({data.get('flows_passed', 0)} passed)\n")
     elif event_type == "flow_step":
-        print(f"   [Flow: {data.get('flow', '')}] Step: {data.get('step_action', '')} -> {data.get('step_target', '')[:50]}")
+        print(f"   [Flow: {data.get('flow', '')}] {data.get('step_action', '')} -> {data.get('step_target', '')[:60]}")
     elif event_type == "flow_complete":
-        ctx = data.get("context", {})
         print(f"   [Flow: {data.get('flow', '')}] {data.get('status', '').upper()} ({data.get('duration_ms', 0)}ms)")
-    elif event_type == "auth_attempted":
-        status = "SUCCESS" if data.get("success") else "FAILED"
-        method = data.get("method", "")
-        cookies = data.get("cookies_injected", 0)
-        msg = data.get("message", "")[:80]
-        if data.get("success") and cookies:
-            print(f"   [AUTH] {status} via {method}: {cookies} cookies injected. {msg}")
-        else:
-            print(f"   [AUTH] {status}: {msg}")
-    elif event_type == "auth_required":
-        pass  # The auth handler prints its own instructions
-    elif event_type == "popup_dismissed":
-        print(f"         Dismissed overlay: {', '.join(data.get('types', []))}")
-    elif event_type == "state_errors":
-        for err in data.get("js_errors", [])[:2]:
-            print(f"         [JS ERROR] {err[:80]}")
-        for url in data.get("network_errors", [])[:2]:
-            print(f"         [NET ERROR] {url}")
+    elif event_type == "agent_thinking":
+        thought = data.get("thought", "")
+        if thought and not thought.startswith("Browser agent"):
+            print(f"         AI: {thought[:80]}")
 
 
-async def run_scan(url: str, max_pages: int, viewports: list[str], headful: bool = False):
+async def run_scan(
+    url: str, max_pages: int, viewports: list[str],
+    headless: bool, storage_state: str | None, user_data_dir: str | None,
+):
     try:
         scanner = FlowLensScanner(
             url=url,
             max_pages=max_pages,
             viewports=viewports,
             on_progress=_cli_progress,
-            headful=headful,
+            headless=headless,
+            storage_state=storage_state,
+            user_data_dir=user_data_dir,
         )
         return await scanner.scan()
     except Exception as e:

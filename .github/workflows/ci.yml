@@ -69,22 +69,20 @@ jobs:
           print('All Python files parsed OK')
           "
 
-      - name: Import check
+      - name: Import check (v2 — Browser-Use powered)
         run: |
           python -c "
           from agent.models.graph import SiteGraph
           from agent.models.types import BugFinding, CrawlResult
-          from agent.models.flow import Flow, FlowStep, ConditionalStep, FlowResult
-          from agent.models.context import FlowContext
+          from agent.models.flow import Flow, FlowStep, FlowResult
+          from agent.core.navigation_engine import NavigationEngine, PageState, NavigationResult
           from agent.core.ai_engine import GeminiEngine
-          from agent.core.explorer import SiteExplorer
+          from agent.core.qa_agent import QAAgent
           from agent.core.scanner import FlowLensScanner
-          from agent.core.flow_runner import FlowRunner
-          from agent.utils.auth_handler import AuthHandler, AuthResult
-          from agent.utils.smart_wait import wait_for_stable_page
-          from agent.utils.retry_engine import find_with_retry
-          from agent.utils.popup_guard import dismiss_overlays
-          from agent.utils.state_verifier import StateVerifier
-          from agent.utils.test_data import detect_site_type, get_search_query
+          from agent.core.report import print_report
+          from agent.detectors.functional import FunctionalDetector
+          from agent.detectors.performance import PerformanceDetector
+          from agent.detectors.responsive import ResponsiveDetector
+          from backend.app.main import app
           print('All imports OK')
           "
