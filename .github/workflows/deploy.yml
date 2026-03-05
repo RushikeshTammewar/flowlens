@@ -38,7 +38,13 @@ jobs:
               echo 'GEMINI_MODEL=${{ secrets.GEMINI_MODEL }}' >> .env
 
             echo "--- Installing Python dependencies ---"
+            if [ ! -f .venv/bin/python3.12 ]; then
+              echo "Rebuilding venv with Python 3.12..."
+              rm -rf .venv
+              python3.12 -m venv .venv
+            fi
             source .venv/bin/activate
+            pip install -q --upgrade pip
             pip install -q -r backend/requirements.txt -r agent/requirements.txt
 
             echo "--- Installing Playwright for remote auth ---"
