@@ -107,6 +107,15 @@ class NavigationEngine:
         kwargs: dict[str, Any] = {
             "headless": self._headless,
             "keep_alive": True,
+            "disable_security": True,
+            "args": [
+                "--disable-features=PasswordCheck,PasswordLeakDetection,"
+                "PasswordManagerOnboarding,PasswordSaving",
+                "--no-default-browser-check",
+                "--disable-popup-blocking",
+                "--disable-prompt-on-repost",
+                "--disable-infobars",
+            ],
         }
         if self._storage_state:
             kwargs["storage_state"] = self._storage_state
