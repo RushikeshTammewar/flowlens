@@ -162,33 +162,160 @@ Respond JSON:
         return self.site_context
 
     # ═══════════════════════════════════════════
-    # STAGE 2: Page Assessment
+    # AUTH: Login wall detection
     # ═══════════════════════════════════════════
 
-    async def assess_page(self, state: PageState) -> dict:
-        """Look at a page and assess it BEFORE testing."""
+    async def detect_auth_wall(self, state: PageState) -> dict:
+        """Determine if the current page is a login/auth wall blocking content."""
         parts = []
         if state.screenshot_b64:
             parts.append({"mime_type": "image/png", "data": state.screenshot_b64})
 
-        parts.append(f"""You are a senior QA engineer assessing a page BEFORE testing it.
+        parts.append(f"""You are a senior QA engineer. Determine if this page is a LOGIN WALL
+that blocks access to the actual site content.
+
+URL: {state.url}
+Title: {state.title}
+Auth state: {self.site_context.auth_state}
+
+A login wall means:
+- The page shows a login/sign-in form as the PRIMARY content
+- OR the page redirected to a login page (URL contains /login, /signin, /auth, etc.)
+- OR the page shows "Please log in" / "Sign in to continue" type messaging
+- OR the page is mostly empty/blank because the user isn't authenticated
+
+NOT a login wall:
+- A page with a small "Sign in" button in the header but real content visible
+- A settings page that reasonably requires auth
+- A page with a login OPTION but also public content
+
+Respond JSON:
+{{"is_login_wall": true/false, "confidence": "high/medium/low",
+  "login_form_visible": true/false,
+  "login_task": "If login wall: describe exactly how to log in (e.g. 'Click the email input, type the email, click the password input, type the password, click Sign In'). Empty string if not a login wall.",
+  "reason": "1 sentence explanation"}}""")
+
+        result = await self._call(parts)
+        if isinstance(result, dict) and "is_login_wall" in result:
+            return result
+        return {"is_login_wall": False, "confidence": "low", "login_form_visible": False, "login_task": "", "reason": "AI unavailable"}
+
+    # ═══════════════════════════════════════════
+    # STAGE 2: Page Assessment
+    # ═══════════════════════════════════════════
+
+    async def assess_page(self, state: PageState) -> dict:
+        """Look at a page and assess it BEFORE testing.
+
+        This is a lightweight check. Deep analysis is done in assess_and_plan().
+        """
+        return {}
+
+    async def assess_and_plan(
+        self, state: PageState, already_tested: list[str],
+    ) -> tuple[dict, list[dict]]:
+        """Combined assessment + journey planning in a single AI call.
+
+        Returns (assessment_dict, journeys_list). Saves one Gemini API call per page.
+        """
+        parts = []
+        if state.screenshot_b64:
+            parts.append({"mime_type": "image/png", "data": state.screenshot_b64})
+
+        critical_instruction = ""
+        if self.site_context.critical_flow and not any("critical" in t.lower() for t in already_tested):
+            critical_instruction = f"""
+MANDATORY FIRST JOURNEY:
+The site's critical flow is: "{self.site_context.critical_flow}"
+Your FIRST journey MUST test this. This is the highest priority.
+"""
+
+        parts.append(f"""You are a senior QA engineer with 10+ years experience.
+Look at this page and do TWO things: assess it, then plan test journeys.
 
 {self.site_context.summary()}
 
 Page: {state.url}
 Title: {state.title}
+Auth state: {self.site_context.auth_state}
+Already tested: {already_tested[:10]}
+{critical_instruction}
 
-Assess:
-1. page_purpose: What is this page for?
-2. testable_features: What can be tested here without auth?
-3. auth_required_features: What needs login?
-4. visual_issues: Any visible problems? (broken layout, missing images, errors)
+═══ PART 1: ASSESS THE PAGE ═══
+
+Look for:
+- page_purpose: What is this page for?
+- visual_issues: Broken layout, missing images, errors, blank areas, overlapping elements
+- error_states: Error messages, 404s, 500s, "something went wrong"
+- empty_states: Suspiciously empty sections that should have content
+
+═══ PART 2: PLAN TEST JOURNEYS ═══
+
+Plan 3-5 journeys covering THREE CATEGORIES:
+
+1. HAPPY PATH (1-2 journeys): The main use case working correctly. Priority 8-10.
+
+2. NEGATIVE/EDGE CASE (1-2 journeys): Try to BREAK things:
+   - Type gibberish into search → graceful "no results"?
+   - Submit empty form → validation errors?
+   - Invalid data (email without @) → handled?
+   - Special characters in inputs
+   Priority 6-8.
+
+3. BOUNDARY/STATE (1 journey): Test transitions:
+   - Click back after action → page restores?
+   - Empty states handled gracefully?
+   Priority 5-7.
+
+For each journey, write a CLEAR, SELF-CONTAINED task description.
+The browser agent will execute autonomously — be explicit:
+- EXACTLY what to type and where (use specific test values)
+- EXACTLY what to click
+- EXACTLY what to verify
+
+EXAMPLE:
+{{"name": "Search happy path", "priority": 10, "requires_auth": false,
+  "task": "Find the search input, type 'wireless headphones', press Enter. Verify search results appear.",
+  "expected_outcome": "Search results page displays relevant products"}}
+
+RULES:
+- Be SPECIFIC: say "type 'laptop'" not "type something"
+- Tasks are self-contained — agent has no prior context
+- Starting URL: {state.url}
+- At least ONE negative/edge case test
+- First journey = most critical user action
+- Do NOT test footer links, legal pages, cookie banners
 
 Respond JSON:
-{{"page_purpose": "...", "testable_features": [...], "auth_required_features": [...], "visual_issues": [...]}}""")
+{{"assessment": {{
+    "page_purpose": "...",
+    "visual_issues": [...],
+    "error_states": [...],
+    "empty_states": [...]
+  }},
+  "journeys": [
+    {{"name": "...", "priority": 1-10, "requires_auth": false,
+      "task": "...", "expected_outcome": "..."}},
+    ...
+  ]
+}}""")
 
         result = await self._call(parts)
-        return result if isinstance(result, dict) else {}
+        if isinstance(result, dict):
+            assessment = result.get("assessment", {})
+            journeys = result.get("journeys", [])
+
+            if not journeys and "raw" not in result:
+                journeys = [v for v in result.values() if isinstance(v, list) and v and isinstance(v[0], dict) and "task" in v[0]]
+                journeys = journeys[0] if journeys else []
+
+            for issue in assessment.get("visual_issues", []):
+                self.site_context.key_findings.append(f"Visual: {issue}")
+            for err in assessment.get("error_states", []):
+                self.site_context.key_findings.append(f"Error: {err}")
+
+            return assessment, journeys
+        return {}, []
 
     # ═══════════════════════════════════════════
     # STAGE 3: Journey Planning
@@ -217,7 +344,12 @@ The site's critical flow is: "{self.site_context.critical_flow}"
 Your FIRST journey MUST test this. This is the highest priority.
 """
 
-        parts.append(f"""You are a senior QA engineer. Plan test journeys for this page.
+        error_states = assessment.get("error_states", [])
+        empty_states = assessment.get("empty_states", [])
+        visual_issues = assessment.get("visual_issues", [])
+
+        parts.append(f"""You are a senior QA engineer with 10+ years experience. Plan test journeys for this page.
+Think like a QA who WANTS to find bugs, not just verify happy paths.
 
 {self.site_context.summary()}
 
@@ -227,29 +359,55 @@ Purpose: {assessment.get('page_purpose', 'unknown')}
 Testable features: {testable}
 Auth state: {self.site_context.auth_state}
 Already tested: {already_tested[:10]}
+Visible errors: {error_states}
+Empty areas: {empty_states}
+Visual issues: {visual_issues}
 {critical_instruction}
-Plan 2-4 journeys. For each journey, write a CLEAR TASK DESCRIPTION
-that tells a browser agent exactly what to do. Be specific about:
-- What to type and where
-- What to click
-- What to verify after each action
+Plan 3-5 journeys covering THREE CATEGORIES:
+
+1. HAPPY PATH (1-2 journeys): The main use case working correctly.
+   Priority 8-10.
+
+2. NEGATIVE/EDGE CASE (1-2 journeys): Try to BREAK things:
+   - Type gibberish into search ("asdfghjkl") → does it show "no results" gracefully?
+   - Submit an empty form → does it show validation errors?
+   - Enter invalid data (email without @, phone with letters) → does it handle it?
+   - Navigate to a non-existent sub-page → is there a proper 404?
+   - Try special characters: <script>alert(1)</script> in inputs
+   Priority 6-8.
+
+3. BOUNDARY/STATE (1 journey): Test transitions and states:
+   - Click back after an action → does the page restore correctly?
+   - Interact rapidly → does the UI remain responsive?
+   - Check if empty states (no items, no results) are handled
+   Priority 5-7.
+
+For each journey, write a CLEAR, SELF-CONTAINED task description.
+The browser agent has NO prior context — be explicit about:
+- EXACTLY what to type and where (use specific test values)
+- EXACTLY what to click
+- EXACTLY what to verify after each action
 
 EXAMPLE journeys:
-{{"name": "Test search", "priority": 10, "requires_auth": false,
+{{"name": "Search happy path", "priority": 10, "requires_auth": false,
   "task": "Find the search input on the page, type 'wireless headphones' into it, press Enter or click the search button, then verify that search results appear showing relevant products.",
   "expected_outcome": "Search results page displays products matching the query"}}
 
-{{"name": "Test category navigation", "priority": 7, "requires_auth": false,
-  "task": "Find and click the 'Electronics' category link in the navigation menu. Wait for the page to load. Verify that the page shows electronics products with prices.",
-  "expected_outcome": "Category page shows filtered products"}}
+{{"name": "Search with gibberish input", "priority": 7, "requires_auth": false,
+  "task": "Find the search input, type 'zzzzqqqxxx123' (nonsense), press Enter. Check whether the page shows a graceful 'no results' message or crashes/shows an error page.",
+  "expected_outcome": "Page shows a user-friendly 'no results found' message, not a crash or error"}}
+
+{{"name": "Empty form submission", "priority": 8, "requires_auth": false,
+  "task": "Find any form on the page (contact, signup, search). Without filling in any fields, click the submit button. Verify that the page shows validation errors or prevents submission.",
+  "expected_outcome": "Form shows validation errors for required fields"}}
 
 RULES:
 - Be SPECIFIC: say "type 'laptop'" not "type something"
 - The task must be self-contained — the browser agent has no prior context
-- Include what URL we're starting from if relevant
-- Include WHAT to verify (expected outcome)
+- Include what URL we're starting from: {state.url}
+- At least ONE journey must be a negative/edge case test
 - First journey MUST be the most critical user action
-- Do NOT test footer links, legal pages, language selectors
+- Do NOT test footer links, legal pages, language selectors, cookie banners
 
 Respond JSON:
 {{"journeys": [
@@ -278,8 +436,9 @@ Respond JSON:
 
         errors = nav_result.get("errors", [])
         error_str = "; ".join(errors[:3]) if errors else "none"
+        agent_report = nav_result.get("agent_report", "")
 
-        parts.append(f"""You just completed a QA test journey.
+        parts.append(f"""You are a senior QA engineer verifying a test result. Be CRITICAL — your job is to find problems.
 
 Journey: {journey_name}
 Expected: {expected_outcome}
@@ -287,22 +446,37 @@ Final URL: {state.url}
 Navigation errors: {error_str}
 Navigation success: {nav_result.get('success', False)}
 Actions taken: {nav_result.get('actions_taken', 0)}
+Agent's own report: {agent_report or 'none'}
 
-Look at the screenshot and determine the outcome:
+Look at the screenshot carefully and determine the outcome:
 
-- "passed": The expected outcome clearly occurred.
-- "failed": Something UNEXPECTED happened indicating a BUG (error message, wrong content, broken UI).
+- "passed": The expected outcome CLEARLY occurred. Content is correct and complete.
+- "failed": Something went wrong — a BUG exists:
+  * Error message visible (404, 500, "something went wrong", "undefined", "null")
+  * Wrong content shown (search for X but results show Y)
+  * Broken layout (overlapping text, cut-off content, elements off-screen)
+  * Missing content (empty sections where data should be)
+  * Broken images or missing assets
+  * Form didn't validate (accepted invalid input that should be rejected)
+  * Page crashed or showed a stack trace
 - "blocked": Cannot proceed because of auth/permissions/CAPTCHA. NOT a bug.
 - "inconclusive": Can't determine the outcome.
 
-IMPORTANT:
-- Login page appearing = BLOCKED, not failed
-- An error like "404" or "500" = FAILED (real bug)
-- A page with relevant content = PASSED
-- Blank or empty page = FAILED
+CRITICAL RULES:
+- Login/auth wall appearing = BLOCKED, not failed
+- HTTP errors (404, 500) = FAILED (real bug)
+- A page with relevant content matching the expected outcome = PASSED
+- Blank or empty page where content was expected = FAILED
+- "No results found" for a valid search query = FAILED
+- "No results found" for gibberish search = PASSED (correct behavior)
+- Navigation error reported but page looks fine = check the screenshot carefully
+
+In the "issues" array, list EVERY problem you see on the page, even minor ones.
+These will be logged as bugs, so be specific: "Submit button overlaps the footer on the page"
+not just "layout issue".
 
 Respond JSON:
-{{"status": "passed|failed|blocked|inconclusive", "reason": "1-2 sentences", "issues": ["any bugs noticed"], "notes": "observations"}}""")
+{{"status": "passed|failed|blocked|inconclusive", "reason": "1-2 sentences", "issues": ["specific bug descriptions"], "notes": "any other observations"}}""")
 
         result = await self._call(parts)
         if isinstance(result, dict) and "status" in result:

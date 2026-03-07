@@ -68,6 +68,37 @@ _FAILED_RESOURCES = """(() => {
     } catch { return []; }
 })()"""
 
+_DEAD_LINKS = """(() => {
+    const dead = [];
+    const anchors = document.querySelectorAll('a[href]');
+    for (const a of anchors) {
+        try {
+            const href = a.href;
+            if (!href || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) continue;
+            if (href.includes('#') && !href.split('#')[1]) continue;
+            const hashTarget = href.split('#')[1];
+            if (hashTarget && href.startsWith(location.origin)) {
+                if (!document.getElementById(hashTarget) && !document.querySelector('[name="' + CSS.escape(hashTarget) + '"]')) {
+                    dead.push({ href: href.substring(0, 150), text: (a.textContent || '').trim().substring(0, 60), type: 'broken_anchor' });
+                }
+            }
+        } catch {}
+    }
+    return dead.slice(0, 10);
+})()"""
+
+_EMPTY_LINKS = """(() => {
+    return [...document.querySelectorAll('a')]
+        .filter(a => {
+            const text = (a.textContent || '').trim();
+            const img = a.querySelector('img, svg');
+            const aria = a.getAttribute('aria-label');
+            return !text && !img && !aria && a.offsetParent !== null;
+        })
+        .map(a => ({ href: (a.href || '').substring(0, 100) }))
+        .slice(0, 10);
+})()"""
+
 
 class FunctionalDetector:
     """Deterministic bug detection via JS evaluation. HIGH confidence."""
@@ -141,6 +172,31 @@ class FunctionalDetector:
                     page_url=page_url,
                     evidence={"request_url": req.get("url", ""), "status": status},
                 ))
+
+        dead_links = await execute_js(_DEAD_LINKS)
+        if isinstance(dead_links, list):
+            for link in dead_links:
+                findings.append(BugFinding(
+                    title=f"Broken anchor: {_short(link.get('text', '') or link.get('href', ''))}",
+                    category=Category.FUNCTIONAL,
+                    severity=Severity.P3,
+                    confidence=Confidence.HIGH,
+                    page_url=page_url,
+                    description=f"Link points to #{link.get('href', '').split('#')[-1]} which doesn't exist on the page.",
+                    evidence={"href": link.get("href", ""), "text": link.get("text", "")},
+                ))
+
+        empty_links = await execute_js(_EMPTY_LINKS)
+        if isinstance(empty_links, list) and len(empty_links) > 0:
+            findings.append(BugFinding(
+                title=f"{len(empty_links)} links with no accessible text",
+                category=Category.FUNCTIONAL,
+                severity=Severity.P3,
+                confidence=Confidence.MEDIUM,
+                page_url=page_url,
+                description="Links without text, images, or aria-labels are inaccessible and confusing.",
+                evidence={"count": len(empty_links), "examples": empty_links[:5]},
+            ))
 
         return findings
 

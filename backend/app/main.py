@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, BackgroundTasks, Request
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -81,9 +81,17 @@ def health():
 @app.post("/api/v1/scan", response_model=ScanResponse)
 async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=422, detail="URL is required")
     if not url.startswith("http"):
         url = f"https://{url}"
 
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not parsed.netloc or "." not in parsed.netloc:
+        raise HTTPException(status_code=422, detail=f"Invalid URL: {url}")
+
+    max_pages = min(req.max_pages, 50)
     scan_id = str(uuid.uuid4())[:8]
 
     scans[scan_id] = {
@@ -98,7 +106,7 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     _event_queues[scan_id] = []
     _auth_cookie_events[scan_id] = asyncio.Event()
 
-    background_tasks.add_task(run_scan, scan_id, url, req.max_pages, req.viewports)
+    background_tasks.add_task(run_scan, scan_id, url, max_pages, req.viewports)
 
     return ScanResponse(scan_id=scan_id, status="running", url=url)
 
@@ -107,7 +115,7 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
 async def scan_stream(scan_id: str, request: Request):
     """SSE endpoint that streams live progress events during a scan."""
     if scan_id not in scans:
-        return {"error": "Scan not found"}
+        raise HTTPException(status_code=404, detail="Scan not found")
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -153,7 +161,7 @@ async def scan_stream(scan_id: str, request: Request):
 @app.get("/api/v1/scan/{scan_id}")
 async def get_scan(scan_id: str):
     if scan_id not in scans:
-        return {"error": "Scan not found"}, 404
+        raise HTTPException(status_code=404, detail="Scan not found")
 
     scan = scans[scan_id]
 
@@ -231,12 +239,12 @@ async def list_scans():
 async def auth_start(scan_id: str, background_tasks: BackgroundTasks):
     """Launch a remote browser for the user to log in."""
     if scan_id not in scans:
-        return {"error": "Scan not found"}
+        raise HTTPException(status_code=404, detail="Scan not found")
 
     scan = scans[scan_id]
     login_url = scan.get("auth_login_url")
     if not login_url:
-        return {"error": "No login URL available for this scan"}
+        raise HTTPException(status_code=400, detail="No login URL available for this scan")
 
     if scan_id in _remote_browsers:
         return {"status": "already_running"}
@@ -264,38 +272,37 @@ async def auth_start(scan_id: str, background_tasks: BackgroundTasks):
     return {"status": "started", "login_url": login_url}
 
 
-@app.post("/api/v1/scan/{scan_id}/auth/click")
-async def auth_click(scan_id: str, req: ClickRequest):
+def _get_remote_session(scan_id: str) -> RemoteBrowserSession:
     session = _remote_browsers.get(scan_id)
     if not session:
-        return {"error": "No remote browser session"}
+        raise HTTPException(status_code=404, detail="No remote browser session")
+    return session
+
+
+@app.post("/api/v1/scan/{scan_id}/auth/click")
+async def auth_click(scan_id: str, req: ClickRequest):
+    session = _get_remote_session(scan_id)
     await session.click(req.x, req.y)
     return {"status": "ok"}
 
 
 @app.post("/api/v1/scan/{scan_id}/auth/type")
 async def auth_type(scan_id: str, req: TypeRequest):
-    session = _remote_browsers.get(scan_id)
-    if not session:
-        return {"error": "No remote browser session"}
+    session = _get_remote_session(scan_id)
     await session.type_text(req.text)
     return {"status": "ok"}
 
 
 @app.post("/api/v1/scan/{scan_id}/auth/keypress")
 async def auth_keypress(scan_id: str, req: KeyRequest):
-    session = _remote_browsers.get(scan_id)
-    if not session:
-        return {"error": "No remote browser session"}
+    session = _get_remote_session(scan_id)
     await session.press_key(req.key)
     return {"status": "ok"}
 
 
 @app.post("/api/v1/scan/{scan_id}/auth/scroll")
 async def auth_scroll(scan_id: str, req: ScrollRequest):
-    session = _remote_browsers.get(scan_id)
-    if not session:
-        return {"error": "No remote browser session"}
+    session = _get_remote_session(scan_id)
     await session.scroll(req.delta_x, req.delta_y)
     return {"status": "ok"}
 

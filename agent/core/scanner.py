@@ -79,6 +79,7 @@ class FlowLensScanner:
                 max_pages=self.max_pages,
                 nav=nav,
                 on_progress=self._on_progress,
+                sensitive_data=self._sensitive_data,
             )
 
             try:

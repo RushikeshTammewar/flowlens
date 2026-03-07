@@ -4,12 +4,18 @@ All browser interaction goes through this module. FlowLens's QA logic
 treats it as a black box: give it a task in natural language, get back
 the result and page state.
 
-Browser-Use uses CDP three-tree fusion for element discovery and
-LLM-driven action planning. FlowLens never touches selectors.
+Architecture:
+- ONE BrowserSession lives for the entire scan (keep_alive=True).
+- Each task creates a fresh Agent that reuses the same session.
+- After Agent.run(), a health check detects if Chrome died (heavy sites
+  like YouTube can crash Chrome between tasks) and auto-restarts.
+- navigate_to() moves to the next page between tasks.
+- stop() tears down the session at the very end.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
@@ -17,6 +23,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+TASK_TIMEOUT_SECONDS = 120
 
 
 @dataclass
@@ -47,12 +55,9 @@ def _ensure_google_api_key():
 
 
 def _write_chrome_prefs(user_data_dir: str):
-    """Write Chrome preferences that disable the password manager entirely.
+    """Disable password manager and safe-browsing at the Chrome profile level."""
+    import json
 
-    Command-line flags alone don't suppress the breach-detection popup
-    in headful mode. Setting profile-level prefs does.
-    """
-    import json, os
     default_dir = os.path.join(user_data_dir, "Default")
     os.makedirs(default_dir, exist_ok=True)
     prefs_path = os.path.join(default_dir, "Preferences")
@@ -84,8 +89,12 @@ def _write_chrome_prefs(user_data_dir: str):
 class NavigationEngine:
     """LLM-driven browser navigation via Browser-Use.
 
-    Browser class IS a BrowserSession (subclass). It manages Chrome via
-    CDP and provides navigate_to(), take_screenshot(), cdp_client, etc.
+    Lifecycle follows browser-use's intended pattern:
+      1. start() launches ONE BrowserSession with keep_alive=True.
+      2. execute_task() creates a per-task Agent that reuses the session.
+      3. After Agent.run(), AboutBlankWatchdog keeps Chrome alive.
+      4. navigate_to() moves to the next page — no restart needed.
+      5. stop() tears down the session at the very end.
     """
 
     def __init__(
@@ -101,7 +110,7 @@ class NavigationEngine:
         self._storage_state = storage_state
         self._user_data_dir = user_data_dir
         self._sensitive_data = sensitive_data
-        self._browser = None  # Browser IS BrowserSession
+        self._browser = None
         self._llm = None
 
     def _get_llm(self):
@@ -136,54 +145,33 @@ class NavigationEngine:
     # ──────────────────────────────────────────────
 
     async def start(self):
-        """Launch Chrome via Browser-Use CDP."""
-        from browser_use import Browser
+        """Launch ONE BrowserSession for the entire scan."""
+        from browser_use import BrowserSession
 
         user_data_dir = self._user_data_dir
-        if not user_data_dir:
-            import tempfile
-            user_data_dir = tempfile.mkdtemp(prefix="flowlens-chrome-")
-            self._tmp_user_data_dir = user_data_dir
-
-        _write_chrome_prefs(user_data_dir)
+        if user_data_dir:
+            _write_chrome_prefs(user_data_dir)
 
         kwargs: dict[str, Any] = {
             "headless": self._headless,
             "keep_alive": True,
             "disable_security": True,
-            "user_data_dir": user_data_dir,
-            "args": [
-                "--disable-features=PasswordCheck,PasswordLeakDetection,"
-                "PasswordManagerOnboarding,PasswordSaving,"
-                "PasswordReuseDetectionEnabled,"
-                "SafeBrowsingEnhancedProtection,"
-                "SafeBrowsingBulkPasswordCheck,"
-                "IdentityStatusDialog,PasswordStrength,"
-                "ChromePasswordManagerPromo",
-                "--disable-sync",
-                "--disable-background-networking",
-                "--password-store=basic",
-                "--no-default-browser-check",
-                "--no-first-run",
-                "--disable-popup-blocking",
-                "--disable-prompt-on-repost",
-                "--disable-infobars",
-                "--disable-translate",
-                "--disable-client-side-phishing-detection",
-            ],
         }
+        if user_data_dir:
+            kwargs["user_data_dir"] = user_data_dir
         if self._storage_state:
             kwargs["storage_state"] = self._storage_state
 
-        self._browser = Browser(**kwargs)
+        self._browser = BrowserSession(**kwargs)
         await self._browser.start()
         self._emit("debug", {"msg": "Browser launched via Browser-Use (CDP)"})
 
     async def stop(self):
-        """Close browser and release resources."""
+        """Close browser at the end of the scan."""
         if self._browser:
             try:
-                await self._browser.stop()
+                async with asyncio.timeout(10):
+                    await self._browser.stop()
             except Exception:
                 pass
         self._browser = None
@@ -192,20 +180,46 @@ class NavigationEngine:
     def is_running(self) -> bool:
         return self._browser is not None
 
+    async def _ensure_browser_alive(self):
+        """Detect if Chrome died (common on heavy sites) and auto-restart."""
+        if not self._browser:
+            return
+        try:
+            async with asyncio.timeout(5):
+                url = await self._browser.get_current_page_url()
+            if url is not None:
+                return
+        except Exception:
+            pass
+        self._emit("debug", {"msg": "Chrome process died, restarting browser..."})
+        try:
+            await self._browser.stop()
+        except Exception:
+            pass
+        self._browser = None
+        await self.start()
+
     # ──────────────────────────────────────────────
     # Navigation
     # ──────────────────────────────────────────────
 
     async def navigate_to(self, url: str) -> PageState:
-        """Navigate to a URL directly via CDP (no LLM needed)."""
-        self._emit("debug", {"msg": f"Navigating to {url}"})
+        """Navigate to a URL. Auto-restarts Chrome if it crashed."""
+        await self._ensure_browser_alive()
         if not self._browser:
             return PageState()
 
+        self._emit("debug", {"msg": f"Navigating to {url}"})
         try:
             await self._browser.navigate_to(url)
         except Exception as e:
             logger.warning(f"navigate_to {url} failed: {e}")
+            await self._ensure_browser_alive()
+            if self._browser:
+                try:
+                    await self._browser.navigate_to(url)
+                except Exception:
+                    pass
 
         return await self.get_page_state()
 
@@ -214,11 +228,15 @@ class NavigationEngine:
         task: str,
         max_steps: int = 15,
     ) -> NavigationResult:
-        """Execute a natural-language navigation task autonomously.
+        """Execute a natural-language task via a fresh Agent on the shared session.
 
-        Browser-Use's agent discovers elements via CDP 3-tree fusion,
-        plans actions with the LLM, and executes via CDP events.
+        Includes a hard timeout (TASK_TIMEOUT_SECONDS) and auto-restarts
+        Chrome if it died between tasks.
         """
+        await self._ensure_browser_alive()
+        if not self._browser:
+            return NavigationResult(success=False, errors=["Browser not started"])
+
         self._emit("agent_thinking", {
             "thought": f"Browser agent: {task[:100]}",
         })
@@ -233,23 +251,27 @@ class NavigationEngine:
             use_vision=True,
             max_failures=3,
             sensitive_data=self._sensitive_data,
+            use_judge=False,
         )
 
-        errors: list[str] = []
         try:
-            history = await agent.run(max_steps=max_steps)
+            async with asyncio.timeout(TASK_TIMEOUT_SECONDS):
+                history = await agent.run(max_steps=max_steps)
+        except TimeoutError:
+            self._emit("agent_thinking", {
+                "thought": f"Browser agent timed out after {TASK_TIMEOUT_SECONDS}s",
+            })
+            return NavigationResult(
+                success=False,
+                final_url=await self._current_url(),
+                errors=[f"Task timed out after {TASK_TIMEOUT_SECONDS}s"],
+            )
         except Exception as e:
             return NavigationResult(
                 success=False,
                 final_url=await self._current_url(),
                 errors=[str(e)[:300]],
             )
-
-        for entry in history.history:
-            if entry.result:
-                for r in entry.result:
-                    if r.error:
-                        errors.append(str(r.error)[:200])
 
         is_done = history.is_done() if hasattr(history, "is_done") else True
         final_content = (
@@ -258,7 +280,17 @@ class NavigationEngine:
             else None
         )
 
-        success = is_done and len(errors) == 0
+        agent_success = False
+        errors: list[str] = []
+        if history.history:
+            last_entry = history.history[-1]
+            if last_entry.result:
+                last_result = last_entry.result[-1]
+                agent_success = bool(getattr(last_result, "success", False))
+                if last_result.error:
+                    errors.append(str(last_result.error)[:200])
+
+        success = is_done and agent_success
         status = "completed" if success else "had errors"
         self._emit("agent_thinking", {
             "thought": f"Browser agent {status} ({len(history.history)} steps)",
