@@ -107,11 +107,25 @@ async def run_agent_step(
     success = bool(getattr(last_result, "success", is_done))
     error = getattr(last_result, "error", None)
 
-    # Token usage — browser-use exposes `usage` on the LLM under various
-    # attributes across versions. We probe.
-    usage = cast(dict[str, int], getattr(history, "usage", None) or {})
-    prompt_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)))
-    completion_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
+    # Token usage — browser-use 0.12.6 exposes `usage` as a `UsageSummary`
+    # Pydantic model (NOT a dict). Fields:
+    #   total_prompt_tokens, total_completion_tokens, total_tokens, total_cost.
+    # Older versions exposed a plain dict with prompt_tokens/input_tokens.
+    # We probe both shapes safely.
+    prompt_tokens = 0
+    completion_tokens = 0
+    raw_usage = getattr(history, "usage", None)
+    if raw_usage is not None:
+        if hasattr(raw_usage, "total_prompt_tokens"):
+            # UsageSummary BaseModel (current shape)
+            prompt_tokens = int(getattr(raw_usage, "total_prompt_tokens", 0) or 0)
+            completion_tokens = int(getattr(raw_usage, "total_completion_tokens", 0) or 0)
+        elif isinstance(raw_usage, dict):
+            # Legacy dict shape
+            prompt_tokens = int(raw_usage.get("prompt_tokens", raw_usage.get("input_tokens", 0)) or 0)
+            completion_tokens = int(
+                raw_usage.get("completion_tokens", raw_usage.get("output_tokens", 0)) or 0
+            )
 
     return {
         "success": success,
