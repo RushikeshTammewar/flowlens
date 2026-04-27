@@ -1,0 +1,65 @@
+[project]
+name = "flowlens-replay-worker"
+version = "0.0.1"
+description = "Flowlens v3 Python sidecar wrapping browser-use Agent + tools.act over BU Cloud CDP."
+requires-python = ">=3.12"
+authors = [{ name = "Flowlens" }]
+license = { text = "MIT" }
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.10",
+    "sse-starlette>=2.1.3",
+    "structlog>=24.4.0",
+    "browser-use>=0.12.1",
+    "openai>=1.50.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-mock>=3.14.0",
+    "mypy>=1.13.0",
+    "ruff>=0.7.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "B", "UP", "ASYNC", "S", "RUF"]
+ignore = [
+    "S101", # asserts in tests are fine
+    "E501", # we let formatter handle line length
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S106"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["browser_use.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

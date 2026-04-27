@@ -1,0 +1,51 @@
+/*
+ * Flowlens design tokens.
+ * Both the extension and the web app import this file via Tailwind v4 @theme blocks.
+ *
+ * Anchor brand: terminal aesthetic, off-white surface, near-black text,
+ * IBM Plex Mono everywhere, dark green CTA.
+ */
+@theme {
+	/* Brand palette */
+	--color-fl-black: #0f0f0f;
+	--color-fl-white: #fafaf9;
+	--color-fl-gray: #737373;
+	--color-fl-light: #e7e5e4;
+	--color-fl-soft: #f4f3f1;
+	--color-fl-line: #d6d3d1;
+	--color-fl-green: #16a34a;
+	--color-fl-red: #dc2626;
+	--color-fl-amber: #b45309;
+	--color-fl-blue: #1e40af;
+	--color-fl-cta: #1a5c2e;
+	--color-fl-cta-hi: #1f6e37;
+	--color-fl-cta-lo: #174f27;
+
+	/* Soft tints for status surfaces */
+	--color-fl-green-bg: #ecfdf5;
+	--color-fl-red-bg: #fef2f2;
+	--color-fl-amber-bg: #fffbeb;
+	--color-fl-blue-bg: #eff6ff;
+
+	/* Type */
+	--font-sans: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+	--font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+	--font-serif: 'Instrument Serif', Georgia, serif;
+
+	/* Radii — terminal aesthetic favors square corners; only soft cards round */
+	--radius-fl-sm: 2px;
+	--radius-fl-md: 4px;
+	--radius-fl-lg: 8px;
+
+	/* Elevation */
+	--shadow-fl-sm: 0 1px 0 rgba(15, 15, 15, 0.04);
+	--shadow-fl-md: 0 1px 2px rgba(15, 15, 15, 0.06), 0 4px 12px rgba(15, 15, 15, 0.04);
+	--shadow-fl-lg: 0 2px 6px rgba(15, 15, 15, 0.08), 0 12px 32px rgba(15, 15, 15, 0.08);
+	--shadow-fl-glow-red: 0 0 0 4px rgba(220, 38, 38, 0.18);
+	--shadow-fl-glow-green: 0 0 0 4px rgba(22, 163, 74, 0.18);
+	--shadow-fl-focus: 0 0 0 2px var(--color-fl-white), 0 0 0 4px var(--color-fl-cta);
+
+	/* Motion (durations + easings) */
+	--ease-fl-out: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-fl-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+}

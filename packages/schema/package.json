@@ -1,0 +1,29 @@
+{
+  "name": "@flowlens/schema",
+  "version": "0.0.0",
+  "description": "Shared Zod + Drizzle types for Flowlens v3",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./db": "./src/db.ts",
+    "./events": "./src/events.ts",
+    "./flow": "./src/flow.ts",
+    "./run": "./src/run.ts",
+    "./recording": "./src/recording.ts",
+    "./cookie": "./src/cookie.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'lint OK'"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.39.3",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

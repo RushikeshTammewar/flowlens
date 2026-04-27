@@ -1,0 +1,60 @@
+# AWS App Runner service configuration.
+#
+# Apply via:
+#   aws apprunner create-service --cli-input-yaml file://aws-apprunner.yaml
+# Or update an existing service:
+#   aws apprunner update-service --service-arn $ARN --cli-input-yaml file://aws-apprunner.yaml
+#
+# The image is pulled from ECR by the App Runner service role. Authentication
+# uses image-repository.image-repository-credentials (App Runner -> ECR).
+#
+# Secrets: pull OPENAI_API_KEY, REPLAY_WORKER_SHARED_SECRET, BROWSER_USE_API_KEY
+# from AWS Secrets Manager. The instance role must allow
+# `secretsmanager:GetSecretValue` for the named secret ARNs.
+
+ServiceName: flowlens-replay-worker
+SourceConfiguration:
+  AutoDeploymentsEnabled: false
+  AuthenticationConfiguration:
+    AccessRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/AppRunnerECRAccessRole
+  ImageRepository:
+    ImageRepositoryType: ECR
+    ImageIdentifier: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/flowlens-replay-worker:latest
+    ImageConfiguration:
+      Port: "8000"
+      RuntimeEnvironmentVariables:
+        LOG_LEVEL: info
+        FLOWLENS_MODEL_REPLAY_AGENT: gpt-4.1-mini
+        FLOWLENS_MODEL_JUDGE: gpt-4.1-mini
+      RuntimeEnvironmentSecrets:
+        OPENAI_API_KEY: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:flowlens/openai_api_key
+        REPLAY_WORKER_SHARED_SECRET: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:flowlens/replay_worker_shared_secret
+        BROWSER_USE_API_KEY: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:flowlens/browser_use_api_key
+
+InstanceConfiguration:
+  Cpu: "1 vCPU"
+  Memory: "2 GB"
+  InstanceRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/AppRunnerInstanceRole
+
+HealthCheckConfiguration:
+  Protocol: HTTP
+  Path: /healthz
+  Interval: 30
+  Timeout: 5
+  HealthyThreshold: 2
+  UnhealthyThreshold: 3
+
+# Scale to zero is supported via App Runner auto-scaling configuration.
+# We start at MinSize=0 / MaxSize=10 / MaxConcurrency=20 — tune after benchmarking.
+AutoScalingConfigurationArn: !Sub arn:aws:apprunner:${AWS::Region}:${AWS::AccountId}:autoscalingconfiguration/flowlens-replay-worker-autoscale
+NetworkConfiguration:
+  IngressConfiguration:
+    IsPubliclyAccessible: true
+  EgressConfiguration:
+    EgressType: DEFAULT
+
+Tags:
+  - Key: app
+    Value: flowlens
+  - Key: component
+    Value: replay-worker
