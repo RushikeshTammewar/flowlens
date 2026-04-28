@@ -221,3 +221,9 @@ export async function compileRecordingWorkflow(
 	await emitCompileCompleteStep(input.flowId);
 	return { ok: true, flowId: input.flowId };
 }
+
+// `runCompileInline` lives in `apps/web/src/lib/compile-inline.ts` (separate
+// file so the WDK SWC plugin doesn't treat it as workflow-context and ban
+// Node modules like `pg` from its dependency tree). Used as the fire-and-
+// forget compile dispatcher from /api/recordings/:id/finish until the
+// `.well-known/workflow/v1/*` routing issue on Vercel is isolated.

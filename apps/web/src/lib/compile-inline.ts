@@ -1,0 +1,179 @@
+/**
+ * Inline compile runner — fire-and-forget alternative to the durable
+ * Vercel Workflow.
+ *
+ * # Why this file exists
+ *
+ * `apps/web/src/workflows/compile-recording.ts` defines a Vercel Workflow
+ * Devkit (WDK) function with `'use workflow'` + `'use step'` directives. WDK
+ * builds the `.well-known/workflow/v1/*` routes that drive durable execution.
+ * On our current Vercel deploy those routes return 404 (functions are built
+ * but the edge isn't routing to them), so `start(compileRecordingWorkflow,
+ * ...)` queues a workflow that never executes — flows get stuck at
+ * `compiling` forever.
+ *
+ * Until the routing is fixed we run the same compile pipeline inline as a
+ * fire-and-forget Promise from `/api/recordings/:id/finish`. We lose
+ * resume-on-crash; we get flows that actually compile.
+ *
+ * # Why it's a separate file from `compile-recording.ts`
+ *
+ * The WDK SWC plugin treats any file containing `'use workflow'` as a
+ * workflow execution context and bans Node.js modules (the workflow body
+ * is sandboxed). Our `db` import depends on `pg` which is Node-only, so
+ * if we put `runCompileInline` next to the workflow function the build
+ * fails with "You are attempting to use 'pg' which depends on Node.js
+ * modules". This file has no workflow directives so the SWC plugin
+ * leaves it alone and the inline function can use the full Node stack.
+ *
+ * # Crash safety
+ *
+ * Vercel function instances run up to 60 s on Hobby and 300 s on Pro,
+ * which is well above our typical 5–15 s compile budget. If an instance
+ * dies mid-compile the flow row stays at `compiling`; the user can call
+ * `POST /api/flows/:id/compile-retry` to re-trigger.
+ */
+import { eq } from 'drizzle-orm';
+import type { CompileOutput } from '@flowlens/flow-doc';
+import { compileRecording } from '@flowlens/flow-doc';
+import { syncCookiesToBuProfile } from '@flowlens/cookies-vault';
+import { createBuClient } from '@flowlens/bu-cloud-client';
+import type { RecordedAction } from '@flowlens/schema';
+import { db } from '@/lib/db';
+import { flows, sites, recordings } from '@flowlens/schema/db';
+import { blobKeys } from '@/lib/blob';
+import { emitSseEvent } from '@/lib/sse-bus';
+import { setCompileStatus } from '@/lib/compile-runner';
+
+export interface CompileInlineInput {
+	flowId: string;
+	recordingId: string;
+	orgId: string;
+}
+
+export async function runCompileInline(
+	input: CompileInlineInput,
+): Promise<{ ok: true; flowId: string }> {
+	const startedAt = Date.now();
+	try {
+		const flow = await db.query.flows.findFirst({ where: eq(flows.id, input.flowId) });
+		if (!flow) throw new Error(`flow ${input.flowId} disappeared mid-compile`);
+		const site = await db.query.sites.findFirst({ where: eq(sites.id, flow.siteId) });
+		if (!site) throw new Error(`site ${flow.siteId} disappeared mid-compile`);
+		const recording = await db.query.recordings.findFirst({
+			where: eq(recordings.id, input.recordingId),
+		});
+		if (!recording) throw new Error(`recording ${input.recordingId} disappeared mid-compile`);
+		if (!recording.actionStreamBlobKey) {
+			throw new Error('action stream blob missing — recording never finished');
+		}
+
+		const blobBase = process.env.BLOB_PUBLIC_BASE_URL;
+		if (!blobBase) throw new Error('BLOB_PUBLIC_BASE_URL not configured');
+
+		// Load action stream NDJSON from Vercel Blob.
+		const actionsUrl = `${blobBase}/${recording.actionStreamBlobKey}`;
+		const actionsRes = await fetch(actionsUrl);
+		if (!actionsRes.ok) throw new Error(`action stream fetch returned ${actionsRes.status}`);
+		const actionsText = await actionsRes.text();
+		const actions: RecordedAction[] = actionsText
+			.split('\n')
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as RecordedAction);
+
+		// Run the compile pipeline (narrate × N + synthesize + siblings).
+		const compileResult: CompileOutput = await compileRecording({
+			flowId: input.flowId,
+			siteOrigin: site.origin,
+			siteModelText: typeof site.siteModel === 'string' ? site.siteModel : null,
+			actions,
+			resolveScreenshotUrl: async ({ actionIndex }) => {
+				const blobKey = blobKeys.screenshot(input.recordingId, actionIndex);
+				return `${blobBase}/${blobKey}`;
+			},
+			progress: (e) => {
+				setCompileStatus({
+					flowId: input.flowId,
+					stage: e.stage,
+					pct: e.pct,
+					...(e.detail ? { detail: e.detail } : {}),
+					updatedAt: Date.now(),
+				});
+				void emitSseEvent(`flow:${input.flowId}`, {
+					type: 'compile_progress',
+					flowId: input.flowId,
+					pct: e.pct,
+					stage: e.stage,
+				});
+			},
+		});
+
+		// Best-effort BU profile sync.
+		let buProfileId = flow.buProfileId;
+		if (process.env.BROWSER_USE_API_KEY) {
+			try {
+				const bu = createBuClient();
+				const sync = await syncCookiesToBuProfile({
+					bu,
+					flowId: input.flowId,
+					siteOrigin: site.origin,
+					existingProfileId: flow.buProfileId,
+				});
+				buProfileId = sync.profileId;
+			} catch (err) {
+				console.warn('[compile-inline] bu_profile_sync skipped:', (err as Error).message);
+			}
+		}
+
+		// Commit Flow document + flip status to ready.
+		await db
+			.update(flows)
+			.set({
+				steps: compileResult.steps,
+				name: compileResult.synthesis.name || flow.name,
+				description: compileResult.synthesis.description,
+				preconditions: compileResult.synthesis.preconditions,
+				postconditions: compileResult.synthesis.postconditions,
+				fragilityHints: compileResult.synthesis.fragilityHints,
+				status: 'ready',
+				...(buProfileId ? { buProfileId } : {}),
+				updatedAt: new Date(),
+			})
+			.where(eq(flows.id, input.flowId));
+
+		setCompileStatus({ flowId: input.flowId, stage: 'done', pct: 100, updatedAt: Date.now() });
+		await emitSseEvent(`flow:${input.flowId}`, { type: 'compile_complete', flowId: input.flowId });
+		console.info(
+			`[compile-inline] flow=${input.flowId} ok in ${Date.now() - startedAt}ms`,
+		);
+		return { ok: true, flowId: input.flowId };
+	} catch (err) {
+		console.error(`[compile-inline] flow=${input.flowId} FAILED:`, err);
+		const message = err instanceof Error ? err.message : String(err);
+		try {
+			await db
+				.update(flows)
+				.set({
+					status: 'draft',
+					description: `Compile failed: ${message.slice(0, 400)}`,
+					updatedAt: new Date(),
+				})
+				.where(eq(flows.id, input.flowId));
+			setCompileStatus({
+				flowId: input.flowId,
+				stage: 'failed',
+				pct: 0,
+				error: message,
+				updatedAt: Date.now(),
+			});
+			await emitSseEvent(`flow:${input.flowId}`, {
+				type: 'compile_failed',
+				flowId: input.flowId,
+				error: message,
+			});
+		} catch (mkErr) {
+			console.error('[compile-inline] failed to mark failure:', mkErr);
+		}
+		throw err;
+	}
+}

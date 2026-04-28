@@ -27,8 +27,7 @@ import {
 	hashAuthDomains,
 	earliestCookieExpiry,
 } from '@flowlens/cookies-vault';
-import { start } from 'workflow/api';
-import { compileRecordingWorkflow } from '@/workflows/compile-recording';
+import { runCompileInline } from '@/lib/compile-inline';
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
 	try {
@@ -89,15 +88,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 			.set({ status: 'compiling', cookieSnapshotId: snap.id, updatedAt: new Date() })
 			.where(eq(flows.id, flow.id));
 
-		// Durable compile workflow — replaces the Phase 2 fire-and-forget Promise.
-		// On function-instance death the workflow resumes from the last completed step.
-		await start(compileRecordingWorkflow, [
-			{
-				flowId: flow.id,
-				recordingId,
-				orgId: auth.org.id,
-			},
-		]);
+		// Compile inline via fire-and-forget. We previously dispatched to a
+		// durable Vercel Workflow (`start(compileRecordingWorkflow, ...)`) but
+		// the `.well-known/workflow/v1/*` routes return 404 on this deploy —
+		// the WDK functions are built but the edge isn't routing to them, so
+		// the workflow handler never executes and flows get stuck at
+		// `compiling`. Until that routing issue is isolated, run the same
+		// pipeline inline. Same code path; loses durable resume-on-crash.
+		void runCompileInline({
+			flowId: flow.id,
+			recordingId,
+			orgId: auth.org.id,
+		}).catch((err) => {
+			// runCompileInline already logs + marks the flow row on failure;
+			// the .catch here just prevents an unhandled-rejection warning.
+			console.error('[recordings/finish] compile dispatch failed:', err);
+		});
 
 		return NextResponse.json({
 			flowId: flow.id,
