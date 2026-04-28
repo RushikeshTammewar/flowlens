@@ -98,6 +98,18 @@ export default function Home() {
 				{/* Status / smoke */}
 				<section className="border-t border-fl-light mt-12 pt-6">
 					<h3 className="text-fl-gray text-xs uppercase tracking-wider">Status</h3>
+					<p className="text-fl-gray mt-2 text-xs">
+						API base:{' '}
+						<a
+							href="https://flowlens-beta.vercel.app/api/health"
+							className="underline-offset-2 hover:underline"
+						>
+							flowlens-beta.vercel.app
+						</a>
+						{' · '}
+						stable alias that always tracks the latest READY preview, so
+						shipped extensions don&apos;t break on each deploy.
+					</p>
 					<ul className="mt-3 space-y-1 text-xs">
 						<li className="flex items-baseline gap-2">
 							<span className="bg-fl-green inline-block h-2 w-2 rounded-full" />

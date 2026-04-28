@@ -1,6 +1,35 @@
 import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
 
+/**
+ * Strip raw UTF-8 BOM bytes (`EF BB BF`) from any emitted JS/CSS chunk and
+ * replace them with the `\ufeff` JS-escape so the equivalent character ends
+ * up in memory at runtime. Chrome MV3 content scripts reject any raw BOM
+ * bytes anywhere in the file (rrweb defensively writes a literal BOM in its
+ * BOM-detection helpers, which trips this rule). WXT now uses oxc as its
+ * minifier instead of esbuild, so the `esbuild.charset:'ascii'` flag is
+ * silently ignored — this plugin is the deterministic fix.
+ */
+function stripRawBom() {
+	return {
+		name: 'flowlens:strip-raw-bom',
+		generateBundle(_opts: unknown, bundle: Record<string, { type: string; code?: string; source?: string | Uint8Array }>) {
+			for (const fileName of Object.keys(bundle)) {
+				const chunk = bundle[fileName]!;
+				if (chunk.type === 'chunk' && typeof chunk.code === 'string') {
+					if (chunk.code.includes('\uFEFF')) {
+						chunk.code = chunk.code.replace(/\uFEFF/g, '\\ufeff');
+					}
+				} else if (chunk.type === 'asset' && typeof chunk.source === 'string') {
+					if (chunk.source.includes('\uFEFF')) {
+						chunk.source = chunk.source.replace(/\uFEFF/g, '\\ufeff');
+					}
+				}
+			}
+		},
+	};
+}
+
 // See https://wxt.dev/api/config.html
 export default defineConfig({
 	srcDir: '.',
@@ -39,6 +68,6 @@ export default defineConfig({
 		],
 	},
 	vite: () => ({
-		plugins: [tailwindcss()],
+		plugins: [tailwindcss(), stripRawBom()],
 	}),
 });
