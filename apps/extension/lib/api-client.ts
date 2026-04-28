@@ -18,6 +18,12 @@ export interface StartRecordingResponse {
 }
 
 async function getToken(): Promise<string | null> {
+	// Demo mode: if the build has a baked-in demo bearer, use it for every
+	// request. The server matches it via FLOWLENS_DEMO_BEARER and returns the
+	// singleton demo {user, org}. Lets users skip the Clerk flow entirely.
+	if (APP_CONFIG.demoBearer) {
+		return `flowlens-demo-${APP_CONFIG.demoBearer}`;
+	}
 	const res = await chrome.storage.local.get('flowlens_auth_token');
 	const v = res.flowlens_auth_token;
 	return typeof v === 'string' && v.length > 0 ? v : null;

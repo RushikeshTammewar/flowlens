@@ -62,12 +62,13 @@ export default function Home() {
 								3
 							</span>
 							<div className="flex-1">
-								<p className="text-base font-semibold">Click the icon, sign in, hit Record</p>
+								<p className="text-base font-semibold">Click the icon, hit Record</p>
 								<p className="text-fl-gray mt-1 text-sm">
-									The side panel opens. Sign in with email + password (any email,
-									any 8+ char password — we&apos;re in beta). On any website, click{' '}
-									<span className="font-semibold">Record a flow</span>, demonstrate
-									what you want tested, click Stop. We compile it into a Flow.
+									The side panel opens straight to <span className="font-semibold">Idle</span> —
+									no sign-in, no email, no password (closed-beta demo mode).
+									On any website, click <span className="font-semibold">Record a flow</span>,
+									demonstrate what you want tested, click Stop. We compile it into
+									a Flow.
 								</p>
 								<p className="text-fl-gray mt-1 text-sm">
 									Then click <span className="font-semibold">Run</span> — watch
