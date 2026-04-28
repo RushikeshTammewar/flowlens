@@ -29,11 +29,16 @@ export async function GET(req: Request) {
 		return stopAllBuSessions();
 	}
 
+	const dbUrl = process.env.DATABASE_URL ?? '';
+	const dbUrlUnpooled = process.env.DATABASE_URL_UNPOOLED ?? '';
 	const checks: Record<string, unknown> = {
 		ok: true,
 		ts: new Date().toISOString(),
 		env: {
-			hasDatabaseUrl: !!process.env.DATABASE_URL,
+			hasDatabaseUrl: !!dbUrl,
+			hasDatabaseUrlSslmode: dbUrl.includes('sslmode='),
+			hasDatabaseUrlUnpooled: !!dbUrlUnpooled,
+			hasDatabaseUrlUnpooledSslmode: dbUrlUnpooled.includes('sslmode='),
 			hasBuApiKey: !!process.env.BROWSER_USE_API_KEY,
 			hasClerkSecret: !!process.env.CLERK_SECRET_KEY,
 			hasClerkWebhookSecret: !!process.env.CLERK_WEBHOOK_SIGNING_SECRET,
@@ -41,6 +46,8 @@ export async function GET(req: Request) {
 			hasBlobPublicBase: !!process.env.BLOB_PUBLIC_BASE_URL,
 			hasVaultSecret: !!process.env.FLOWLENS_VAULT_SECRET,
 			hasOpenaiKey: hasOpenAiKey(),
+			hasDemoMode: process.env.FLOWLENS_DEMO_MODE === 'true',
+			hasDemoBearer: !!process.env.FLOWLENS_DEMO_BEARER,
 		},
 		models: MODELS,
 	};
