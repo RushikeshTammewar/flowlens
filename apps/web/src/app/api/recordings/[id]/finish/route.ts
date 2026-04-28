@@ -27,6 +27,7 @@ import {
 	hashAuthDomains,
 	earliestCookieExpiry,
 } from '@flowlens/cookies-vault';
+import { waitUntil } from '@vercel/functions';
 import { runCompileInline } from '@/lib/compile-inline';
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -88,22 +89,32 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 			.set({ status: 'compiling', cookieSnapshotId: snap.id, updatedAt: new Date() })
 			.where(eq(flows.id, flow.id));
 
-		// Compile inline via fire-and-forget. We previously dispatched to a
-		// durable Vercel Workflow (`start(compileRecordingWorkflow, ...)`) but
-		// the `.well-known/workflow/v1/*` routes return 404 on this deploy —
-		// the WDK functions are built but the edge isn't routing to them, so
-		// the workflow handler never executes and flows get stuck at
+		// Compile inline via `waitUntil` — keeps the async work alive after
+		// we send the response. Vercel terminates plain fire-and-forget
+		// promises once the function returns; `waitUntil` is the official
+		// supported way to extend the lifetime up to the function's max
+		// duration (60s Hobby / 300s Pro), which is well above our
+		// 5-15s typical compile budget.
+		//
+		// We previously dispatched to a durable Vercel Workflow
+		// (`start(compileRecordingWorkflow, ...)`) but the
+		// `.well-known/workflow/v1/*` routes return 404 on this deploy —
+		// the WDK functions are built but the edge isn't routing to them,
+		// so the workflow handler never executes and flows got stuck at
 		// `compiling`. Until that routing issue is isolated, run the same
-		// pipeline inline. Same code path; loses durable resume-on-crash.
-		void runCompileInline({
-			flowId: flow.id,
-			recordingId,
-			orgId: auth.org.id,
-		}).catch((err) => {
-			// runCompileInline already logs + marks the flow row on failure;
-			// the .catch here just prevents an unhandled-rejection warning.
-			console.error('[recordings/finish] compile dispatch failed:', err);
-		});
+		// pipeline inline.
+		waitUntil(
+			runCompileInline({
+				flowId: flow.id,
+				recordingId,
+				orgId: auth.org.id,
+			}).catch((err) => {
+				// runCompileInline already logs + marks the flow row on
+				// failure; this catch just prevents an unhandled-rejection
+				// from killing the function.
+				console.error('[recordings/finish] compile dispatch failed:', err);
+			}),
+		);
 
 		return NextResponse.json({
 			flowId: flow.id,

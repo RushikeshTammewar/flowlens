@@ -8,7 +8,8 @@
  * flips status from `compiling` → `ready` regardless of how many times we run.
  */
 import { NextResponse } from 'next/server';
-import { eq, desc } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
+import { waitUntil } from '@vercel/functions';
 import { db } from '@/lib/db';
 import { recordings, flows } from '@flowlens/schema/db';
 import { requireAuthContext, UnauthorizedError } from '@/lib/auth';
@@ -46,16 +47,18 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
 			.set({ status: 'compiling', updatedAt: new Date() })
 			.where(eq(flows.id, flowId));
 
-		// Fire-and-forget. runCompileInline writes back to the DB on success or
-		// failure, so we don't need to await it (and shouldn't — it can take
-		// 5-15s and the client just wants a quick "we're on it" 202).
-		void runCompileInline({
-			flowId,
-			recordingId: rec.id,
-			orgId: auth.org.id,
-		}).catch((err) => {
-			console.error('[compile-retry] dispatch failed:', err);
-		});
+		// `waitUntil` extends the function's lifetime past response so the
+		// inline compile actually runs to completion. Plain fire-and-forget
+		// gets terminated by Vercel as soon as we return.
+		waitUntil(
+			runCompileInline({
+				flowId,
+				recordingId: rec.id,
+				orgId: auth.org.id,
+			}).catch((err) => {
+				console.error('[compile-retry] dispatch failed:', err);
+			}),
+		);
 
 		return NextResponse.json(
 			{ ok: true, flowId, recordingId: rec.id, status: 'compiling' },
