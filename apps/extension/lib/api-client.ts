@@ -12,7 +12,7 @@ import { APP_CONFIG } from '../app.config.js';
 export class ApiError extends Error {
 	readonly status: number;
 	readonly path: string;
-	readonly cause?: string;
+	readonly cause: string | undefined;
 	constructor(status: number, path: string, message: string, body?: string) {
 		super(message);
 		this.name = 'ApiError';

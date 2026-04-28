@@ -12,17 +12,19 @@ export const FlowSynthesisOutputSchema = z.object({
 	preconditions: z.array(z.string().max(200)).default([]),
 	postconditions: z.array(z.string().max(200)).default([]),
 	fragilityHints: z.array(z.string().max(200)).default([]),
-	// OpenAI's structured-output API rejects `.optional()` fields that aren't
-	// also `.nullable()` (zod-to-json-schema emits a missing-field shape that
-	// the API can't satisfy). Use `.nullable().optional()` so OpenAI can pass
-	// `null` and we treat it as "no revision". The compile pipeline reads
-	// these as `revision?.intentRevision ?? narration.intent` so null is fine.
+	// OpenAI's structured-output API requires every property to be marked
+	// required AND nullable (instead of optional). The SDK's
+	// `zodResponseFormat` converter respects `.nullable()` directly but emits
+	// a shape OpenAI rejects when any field is just `.optional()`. Keep
+	// these as required-nullable strings — the model emits `null` to mean
+	// "no revision" and the compile pipeline reads it as
+	// `revision?.intentRevision ?? narration.intent` so null falls through.
 	stepRevisions: z
 		.array(
 			z.object({
 				index: z.number().int().nonnegative(),
-				intentRevision: z.string().max(280).nullable().optional(),
-				expectedOutcomeRevision: z.string().max(280).nullable().optional(),
+				intentRevision: z.string().max(280).nullable(),
+				expectedOutcomeRevision: z.string().max(280).nullable(),
 			}),
 		)
 		.default([]),
