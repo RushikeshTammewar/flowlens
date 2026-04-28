@@ -88,8 +88,20 @@ export async function runCompileInline(
 			siteModelText: typeof site.siteModel === 'string' ? site.siteModel : null,
 			actions,
 			resolveScreenshotUrl: async ({ actionIndex }) => {
+				// HEAD-probe the blob before handing the URL to OpenAI — the
+				// extension can't always capture a screenshot for every action
+				// (e.g. focus events, scroll-only actions) so the narrate
+				// model would 400 with "Error while downloading" if we passed
+				// a non-existent URL. Returning null tells narrate to use a
+				// text-only prompt for that step. Cheap probe (~50ms).
 				const blobKey = blobKeys.screenshot(input.recordingId, actionIndex);
-				return `${blobBase}/${blobKey}`;
+				const url = `${blobBase}/${blobKey}`;
+				try {
+					const probe = await fetch(url, { method: 'HEAD' });
+					return probe.ok ? url : null;
+				} catch {
+					return null;
+				}
 			},
 			progress: (e) => {
 				setCompileStatus({
