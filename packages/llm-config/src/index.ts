@@ -46,8 +46,18 @@ export { getProvider } from './provider.ts';
 const MODEL_TABLE = {
 	/** Per-step intent narration during compile (vision). */
 	narrate: { openai: 'gpt-4.1-mini', azure: 'gpt-5.4-mini' },
-	/** Whole-flow synthesis after narration (text only, multi-step reasoning). */
-	synthesize: { openai: 'gpt-4.1', azure: 'gpt-4.1' },
+	/**
+	 * Whole-flow synthesis after narration (vision + control inventory +
+	 * Phase 4 FeatureContract).
+	 *
+	 * Standardized to the mini variant per the HLD/LLD model table —
+	 * synthesize is a single-shot prompt with structured output and
+	 * doesn't need full GPT-5/4.1 reasoning. Phase 4 contract synthesis
+	 * adds ~400 output tokens vs V1 — still cheap on the mini model.
+	 * Override with FLOWLENS_MODEL_SYNTHESIZE=gpt-4.1 if a regression
+	 * shows the mini model under-extracting behaviors.
+	 */
+	synthesize: { openai: 'gpt-4.1-mini', azure: 'gpt-5.4-mini' },
 	/** browser-use Agent loop on critical or drifted steps. */
 	replayAgent: { openai: 'gpt-4.1-mini', azure: 'gpt-5.4-mini' },
 	/** T3 yes/no judge after every critical replay step. */

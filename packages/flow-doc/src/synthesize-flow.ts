@@ -252,10 +252,14 @@ export async function synthesizeFlowWithContract(
 		.filter((s) => s !== '')
 		.join('\n');
 
+	// Phase 4 — send the page screenshot at `high` detail (vs `low` in
+	// V1). The contract extractor needs to read button labels, validation
+	// hints, and option text to ground behaviors in what's actually
+	// visible. ~+$0.01/call cost; matters for "AI as senior QA" quality.
 	const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
 		textContent(userText),
 		...(input.pageScreenshotUrl
-			? [imageContent({ url: input.pageScreenshotUrl, detail: 'low' as const })]
+			? [imageContent({ url: input.pageScreenshotUrl, detail: 'high' as const })]
 			: []),
 	];
 
