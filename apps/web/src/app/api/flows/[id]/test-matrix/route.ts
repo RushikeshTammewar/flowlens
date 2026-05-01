@@ -8,11 +8,20 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { generateTestMatrix } from '@flowlens/flow-doc';
-import type { FlowStep, PageControlSummary } from '@flowlens/schema';
+import {
+	generateTestMatrix,
+	generateTestMatrixWithContract,
+} from '@flowlens/flow-doc';
+import {
+	type FeatureContract,
+	type FlowStep,
+	type PageControlSummary,
+	FeatureContractSchema,
+} from '@flowlens/schema';
 import { db } from '@/lib/db';
 import { requireAuthContext, UnauthorizedError } from '@/lib/auth';
 import { flows, recordings, testVariants } from '@flowlens/schema/db';
+import { isPhase4Enabled } from '@/lib/feature-flags';
 
 const PostBody = z.object({
 	count: z.union([z.literal(5), z.literal(10), z.literal(20)]).default(10),
@@ -109,27 +118,108 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 			);
 		}
 
+		// Phase 4 / Tier 2 — when the flag is on AND the flow has a
+		// `featureContract` (synthesized at compile time), use the
+		// contract-grounded mode-aware generator. Falls back to V1 if
+		// either is missing — keeps the route safe even if a flow was
+		// compiled before phase 4 turned on.
+		const phase4 = isPhase4Enabled();
+		const rawContract = (flow as { featureContract?: unknown }).featureContract;
+		const featureContract: FeatureContract | null = (() => {
+			if (!phase4 || !rawContract) return null;
+			const parsed = FeatureContractSchema.safeParse(rawContract);
+			if (!parsed.success) {
+				console.warn(
+					`[phase4:matrix-gen] flow=${flow.id} featureContract present but failed schema parse; falling back to V1`,
+				);
+				return null;
+			}
+			return parsed.data;
+		})();
+
+		const sharedFlowInput = {
+			id: flow.id,
+			name: flow.name,
+			description: flow.description,
+			preconditions: flow.preconditions,
+			steps: flowSteps.map((s) => ({
+				index: s.index,
+				action: s.action,
+				intent: s.intent,
+				expectedOutcome: s.expectedOutcome,
+				isCritical: s.isCritical,
+				recordedValue: s.recordedValue ?? null,
+				isSensitive: s.isSensitive,
+				...(s.controlType !== undefined ? { controlType: s.controlType } : {}),
+				...(s.availableOptions !== undefined ? { availableOptions: s.availableOptions } : {}),
+				...(s.constraints !== undefined ? { constraints: s.constraints } : {}),
+				...(s.controlName !== undefined ? { controlName: s.controlName } : {}),
+			})),
+			...(pageControls.length > 0 ? { pageControls } : {}),
+		};
+
+		console.info(
+			`[test-matrix] flow=${flow.id} phase4=${phase4 ? 'on' : 'off'} ` +
+				`featureContract=${featureContract ? 'present' : 'absent'} ` +
+				`requestedCount=${body.count}`,
+		);
+
+		if (featureContract) {
+			const result = await generateTestMatrixWithContract({
+				flow: sharedFlowInput,
+				featureContract,
+				// Use the requested count as a budget hint — the V2 user
+				// prompt computes per-mode targets from this if not
+				// overridden via modeTargets.
+				count: body.count,
+				screenshotUrl,
+				screenshotDetail: 'high',
+			});
+
+			const inserted = await db
+				.insert(testVariants)
+				.values(
+					result.variants.map((v) => ({
+						flowId,
+						family: v.family,
+						name: v.name,
+						description: v.description,
+						rationale: v.rationale,
+						// Synthesize a V1-shaped expectedOutcome from the
+						// shouldPass + assertion so existing reports still
+						// render (DB column is non-null). Tier 4 will
+						// switch the report renderer to read assertion
+						// directly, but until then this keeps things
+						// painted.
+						expectedOutcome: {
+							kind: v.shouldPass ? ('success' as const) : ('rejection' as const),
+							criteria: v.rationale.slice(0, 280),
+						},
+						fieldOverrides: v.fieldOverrides,
+						fragility: v.fragility,
+						generatedBy: result.model,
+						// Phase 4 columns (additive, see LLD §1.1):
+						mode: v.mode,
+						behaviorId: v.behaviorId,
+						assertion: v.assertion,
+						shouldPass: v.shouldPass,
+						riskHypothesis: v.riskHypothesis,
+					})),
+				)
+				.returning();
+
+			return NextResponse.json({
+				flowId,
+				model: result.model,
+				usage: result.usage,
+				variants: inserted,
+				phase4: true,
+			});
+		}
+
+		// V1 path (Phase 4 disabled or no contract on flow).
 		const result = await generateTestMatrix({
-			flow: {
-				id: flow.id,
-				name: flow.name,
-				description: flow.description,
-				preconditions: flow.preconditions,
-				steps: flowSteps.map((s) => ({
-					index: s.index,
-					action: s.action,
-					intent: s.intent,
-					expectedOutcome: s.expectedOutcome,
-					isCritical: s.isCritical,
-					recordedValue: s.recordedValue ?? null,
-					isSensitive: s.isSensitive,
-					...(s.controlType !== undefined ? { controlType: s.controlType } : {}),
-					...(s.availableOptions !== undefined ? { availableOptions: s.availableOptions } : {}),
-					...(s.constraints !== undefined ? { constraints: s.constraints } : {}),
-					...(s.controlName !== undefined ? { controlName: s.controlName } : {}),
-				})),
-				...(pageControls.length > 0 ? { pageControls } : {}),
-			},
+			flow: sharedFlowInput,
 			count: body.count,
 			screenshotUrl,
 			screenshotDetail: 'high',
@@ -157,6 +247,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 			model: result.model,
 			usage: result.usage,
 			variants: inserted,
+			phase4: false,
 		});
 	} catch (err) {
 		if (err instanceof UnauthorizedError) {

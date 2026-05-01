@@ -11,9 +11,13 @@
  *
  * Each stage emits a `compile_progress` SSE-shaped event via `progress.emit`.
  */
-import type { FlowStep, RecordedAction } from '@flowlens/schema';
+import type { FeatureContract, FlowStep, RecordedAction } from '@flowlens/schema';
 import { narrateStep, type NarrationOutput } from './narrate-step';
-import { synthesizeFlow, type FlowSynthesisOutput } from './synthesize-flow';
+import {
+	synthesizeFlow,
+	synthesizeFlowWithContract,
+	type FlowSynthesisOutput,
+} from './synthesize-flow';
 import { suggestSiblingFlows, type SiblingFlowsOutput } from './sibling-flows';
 import { classifySensitive } from './sensitive-classify';
 
@@ -44,6 +48,16 @@ export interface CompileInput {
 	 * recording started).
 	 */
 	pageControls?: import('@flowlens/schema').PageControlSummary[] | null;
+	/**
+	 * Phase 4 / Tier 2 — when true, the synthesize stage uses the
+	 * contract-emitting variant (`synthesizeFlowWithContract`) and the
+	 * resulting `featureContract` is returned on `CompileOutput`.
+	 *
+	 * The caller (compile-inline.ts) sets this from
+	 * `isPhase4Enabled()`. Default false keeps the V1 path unchanged
+	 * for callers that haven't opted in.
+	 */
+	emitFeatureContract?: boolean;
 }
 
 export interface CompileOutput {
@@ -53,6 +67,13 @@ export interface CompileOutput {
 	llmTokensUsed: number;
 	llmCostUsdMicroEstimate: number;
 	pageControls: import('@flowlens/schema').PageControlSummary[] | null;
+	/**
+	 * Present iff the caller passed `emitFeatureContract: true`. Persisted
+	 * to `flows.feature_contract` by compile-inline.ts and consumed by
+	 * `generateTestMatrixWithContract` (Tier 2b) and the two-axis
+	 * verdict aggregator (Tier 4b).
+	 */
+	featureContract: FeatureContract | null;
 }
 
 /** Drop low-information actions (scroll-only, duplicate clicks within 250ms, etc.). */
@@ -239,13 +260,30 @@ export async function compileRecording(input: CompileInput): Promise<CompileOutp
 		}
 	}
 
-	const synthesisResult = await synthesizeFlow({
-		siteOrigin: input.siteOrigin,
-		siteModelText: input.siteModelText,
-		narratedSteps: synthesisInput,
-		pageScreenshotUrl: synthesisScreenshotUrl,
-		pageControls: input.pageControls ?? null,
-	});
+	// Phase 4 / Tier 2 — branch on the emitFeatureContract knob. Both
+	// branches share the same input shape (synthesizeFlowWithContract is
+	// a pure superset of synthesizeFlow's interface). The V1 branch stays
+	// the default until the org flips FLOWLENS_PHASE4_ENABLED.
+	let featureContract: FeatureContract | null = null;
+	const synthesisResult = input.emitFeatureContract
+		? await (async () => {
+				const r = await synthesizeFlowWithContract({
+					siteOrigin: input.siteOrigin,
+					siteModelText: input.siteModelText,
+					narratedSteps: synthesisInput,
+					pageScreenshotUrl: synthesisScreenshotUrl,
+					pageControls: input.pageControls ?? null,
+				});
+				featureContract = r.value.featureContract;
+				return { value: r.value, usage: r.usage, model: r.model };
+			})()
+		: await synthesizeFlow({
+				siteOrigin: input.siteOrigin,
+				siteModelText: input.siteModelText,
+				narratedSteps: synthesisInput,
+				pageScreenshotUrl: synthesisScreenshotUrl,
+				pageControls: input.pageControls ?? null,
+			});
 	totalTokens += synthesisResult.usage.totalTokens;
 	totalCostUsdMicro += estimateCostUsdMicro(
 		synthesisResult.model,
@@ -312,6 +350,7 @@ export async function compileRecording(input: CompileInput): Promise<CompileOutp
 		llmTokensUsed: totalTokens,
 		llmCostUsdMicroEstimate: Math.round(totalCostUsdMicro * 1_000_000),
 		pageControls: input.pageControls ?? null,
+		featureContract,
 	};
 }
 

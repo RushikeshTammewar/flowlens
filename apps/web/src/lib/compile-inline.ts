@@ -44,6 +44,7 @@ import { flows, sites, recordings } from '@flowlens/schema/db';
 import { blobKeys } from '@/lib/blob';
 import { emitSseEvent } from '@/lib/sse-bus';
 import { setCompileStatus } from '@/lib/compile-runner';
+import { isPhase4Enabled } from '@/lib/feature-flags';
 
 export interface CompileInlineInput {
 	flowId: string;
@@ -108,6 +109,16 @@ export async function runCompileInline(
 				`pageControls=${pageControls.length}`,
 		);
 
+		// Phase 4 / Tier 2 — opt-in to FeatureContract synthesis. When
+		// the org-level (env-driven for now) flag is on, the synthesize
+		// stage emits a structured contract that downstream test-matrix
+		// generation reasons against. When off, the V1 synthesize call
+		// runs unchanged. Persisted to flows.feature_contract below.
+		const phase4 = isPhase4Enabled();
+		console.info(
+			`[compile-inline] flow=${input.flowId} phase4=${phase4 ? 'on' : 'off'}`,
+		);
+
 		// Run the compile pipeline (narrate × N + synthesize + siblings).
 		const compileResult: CompileOutput = await compileRecording({
 			flowId: input.flowId,
@@ -115,6 +126,7 @@ export async function runCompileInline(
 			siteModelText: typeof site.siteModel === 'string' ? site.siteModel : null,
 			actions,
 			pageControls,
+			emitFeatureContract: phase4,
 			resolveScreenshotUrl: async ({ actionIndex }) => {
 				// HEAD-probe the blob before handing the URL to OpenAI — the
 				// extension can't always capture a screenshot for every action
@@ -182,6 +194,10 @@ export async function runCompileInline(
 		});
 
 		// Commit Flow document + flip status to ready.
+		// `featureContract` is only populated under Phase 4 (feature flag
+		// in compile.ts via emitFeatureContract). When null, we EXPLICITLY
+		// pass through to keep legacy flows compatible — a missing key in
+		// the SET would no-op rather than clear stale contracts.
 		await db
 			.update(flows)
 			.set({
@@ -193,9 +209,20 @@ export async function runCompileInline(
 				fragilityHints: compileResult.synthesis.fragilityHints,
 				status: 'ready',
 				...(buProfileId ? { buProfileId } : {}),
+				...(compileResult.featureContract
+					? { featureContract: compileResult.featureContract }
+					: {}),
 				updatedAt: new Date(),
 			})
 			.where(eq(flows.id, input.flowId));
+
+		if (compileResult.featureContract) {
+			console.info(
+				`[phase4:contract] persisted to flows.feature_contract flow=${input.flowId} ` +
+					`featureName=${JSON.stringify(compileResult.featureContract.featureName)} ` +
+					`behaviors=${compileResult.featureContract.expectedBehaviors.length}`,
+			);
+		}
 
 		setCompileStatus({ flowId: input.flowId, stage: 'done', pct: 100, updatedAt: Date.now() });
 		await emitSseEvent(`flow:${input.flowId}`, { type: 'compile_complete', flowId: input.flowId });

@@ -20,7 +20,33 @@
 
 import { z } from 'zod';
 
-import { ControlConstraintsSchema, ControlTypeSchema } from './flow';
+import { ControlTypeSchema } from './flow';
+
+/**
+ * Constraints schema used inside the FeatureContract.
+ *
+ * NOTE: This is a separate schema from `ControlConstraintsSchema` in
+ * `flow.ts` even though the field set is identical. Reason: the contract
+ * is the input shape OpenAI's structured-outputs API consumes
+ * (`response_format`), and that API requires every field in `properties`
+ * to also be in `required` — i.e. `.optional()` is rejected, and only
+ * `.nullable()` is allowed for "no value". The `flow.ts` variant uses
+ * `.optional()` and is consumed by NORMAL parsing (stored DB jsonb,
+ * recorder payloads) where optional/missing is the natural shape. We
+ * keep both schemas and convert at the boundary.
+ *
+ * The two are kept structurally compatible — a value matching either
+ * one matches the other after a trivial null-pruning pass. Helper:
+ * `pruneNullsToOptional()` below.
+ */
+export const StrictControlConstraintsSchema = z.object({
+	minLength: z.number().int().nonnegative().nullable(),
+	maxLength: z.number().int().nonnegative().nullable(),
+	min: z.number().nullable(),
+	max: z.number().nullable(),
+	pattern: z.string().nullable(),
+});
+export type StrictControlConstraints = z.infer<typeof StrictControlConstraintsSchema>;
 
 /**
  * One input to the feature — derived from the recording's touched controls
@@ -29,9 +55,9 @@ import { ControlConstraintsSchema, ControlTypeSchema } from './flow';
  *  - `domain` is `'text' | 'number'` for free-form fields, or an explicit
  *    string array for radios/selects (so matrix-gen knows the closed set
  *    without re-reading the page).
- *  - `constraints` mirrors `ControlConstraints` from `flow.ts` (min/max
- *    length, regex, numeric bounds) so the assertion engine can pick a
- *    bound-check that the form actually enforces.
+ *  - `constraints` is the strict-nullable variant above; null when the
+ *    field has no validation constraints. Individual sub-fields are also
+ *    nullable so OpenAI strict-mode accepts the schema.
  *  - `defaultValue` is informational; null when there is no recorded
  *    starting value.
  */
@@ -39,8 +65,8 @@ export const ContractInputSchema = z.object({
 	name: z.string(),
 	controlType: ControlTypeSchema,
 	domain: z.union([z.literal('text'), z.literal('number'), z.array(z.string())]),
-	constraints: ControlConstraintsSchema.optional(),
-	defaultValue: z.string().nullable().optional(),
+	constraints: StrictControlConstraintsSchema.nullable(),
+	defaultValue: z.string().nullable(),
 });
 export type ContractInput = z.infer<typeof ContractInputSchema>;
 
@@ -61,7 +87,12 @@ export const BehaviorSchema = z.object({
 	when: z.string(),
 	then: z.string(),
 	observableOutcome: z.string(),
-	importance: z.enum(['critical', 'normal']).default('normal'),
+	// Required (not optional with default) — OpenAI strict-mode rejects
+	// `default()` on enum properties because they're surfaced via
+	// `.optional()` under the hood. The synthesize prompt always asks
+	// the model to fill this; if it returns null we treat as 'normal'
+	// at the consumer (UI/aggregator).
+	importance: z.enum(['critical', 'normal']),
 });
 export type Behavior = z.infer<typeof BehaviorSchema>;
 
@@ -75,10 +106,13 @@ export type Behavior = z.infer<typeof BehaviorSchema>;
  */
 export const FeatureContractSchema = z.object({
 	featureName: z.string(),
-	inputs: z.array(ContractInputSchema).default([]),
-	expectedBehaviors: z.array(BehaviorSchema).default([]),
-	invariants: z.array(z.string()).default([]),
-	synthesizedAt: z.string().datetime().optional(),
-	synthesizedByModel: z.string().optional(),
+	inputs: z.array(ContractInputSchema),
+	expectedBehaviors: z.array(BehaviorSchema),
+	invariants: z.array(z.string()),
+	// Nullable (not optional) so the same schema parses both LLM
+	// responses (where these are emitted as null) and stored jsonb
+	// (where compile-inline.ts stamps them post-parse).
+	synthesizedAt: z.string().datetime().nullable(),
+	synthesizedByModel: z.string().nullable(),
 });
 export type FeatureContract = z.infer<typeof FeatureContractSchema>;

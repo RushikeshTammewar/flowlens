@@ -20,7 +20,11 @@
 import { z } from 'zod';
 import { zodResponseFormat } from 'openai/helpers/zod';
 import type OpenAI from 'openai';
-import type { PageControlSummary } from '@flowlens/schema';
+import {
+	type PageControlSummary,
+	type FeatureContract,
+	AssertionSpecSchema,
+} from '@flowlens/schema';
 import { MODELS, getLlmClient, getProvider } from '@flowlens/llm-config';
 import { imageContent, textContent } from './structured';
 
@@ -416,8 +420,11 @@ export async function generateTestMatrix(
 			...(wantsReasoning
 				? {
 						reasoning_effort:
-							((process.env.FLOWLENS_MATRIX_REASONING_EFFORT as 'low' | 'medium' | 'high' | undefined) ??
-								'high') as const,
+							((process.env.FLOWLENS_MATRIX_REASONING_EFFORT as
+								| 'low'
+								| 'medium'
+								| 'high'
+								| undefined) ?? 'high') as 'low' | 'medium' | 'high',
 					}
 				: {}),
 		});
@@ -457,6 +464,368 @@ export async function generateTestMatrix(
 		) {
 			console.warn(
 				`[matrix-generator] ${MODELS.matrixGenerator} unavailable, falling back to ${MODELS.matrixGeneratorFallback}: ${msg}`,
+			);
+			return await tryModel(MODELS.matrixGeneratorFallback);
+		}
+		throw err;
+	}
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Phase 4 / Tier 2 — Mode-aware, contract-grounded matrix generator.
+//
+// Distinct from V1 in three ways:
+//   1. Takes a `featureContract` (synthesized by `synthesizeFlowWithContract`)
+//      and partitions variants by behaviorId — every variant cites the
+//      behavior it exercises, enabling per-behavior verdict aggregation.
+//   2. Each variant carries an explicit `mode` ∈ verify | edge | stress |
+//      adversarial | invariant. This is the test plan grouping the senior-
+//      QA UX renders. Aggregator uses `mode` to compute the two-axis
+//      Correctness x Robustness verdict (LLD §15.2).
+//   3. Each variant carries a structured `assertion` (deterministic spec +
+//      LLM fallback prompt) and `shouldPass` flag. The assertion engine
+//      (Tier 3, sidecar/web) reads these — no more "T3 judge guesses
+//      pass/fail from screenshot alone".
+//
+// V1 (`generateTestMatrix`) is unchanged — Phase-4-disabled callers keep
+// the existing family-based variant shape. When the flag flips on, the
+// test-matrix route calls `generateTestMatrixWithContract` instead.
+// ───────────────────────────────────────────────────────────────────────
+
+export const VariantModeSchema = z.enum([
+	'verify',
+	'edge',
+	'stress',
+	'adversarial',
+	'invariant',
+]);
+export type VariantMode = z.infer<typeof VariantModeSchema>;
+
+const TestVariantV2WireSchema = z.object({
+	mode: VariantModeSchema,
+	behaviorId: z.string().min(1).max(120),
+	name: z.string().min(1).max(120),
+	description: z.string().min(1).max(400),
+	rationale: z.string().min(1).max(400),
+	// Senior QA's hypothesis for what could go wrong here. Surfaces in
+	// the report when the variant fails so the human can quickly grok
+	// "ah, this is the SQL-injection-style payload they were testing".
+	riskHypothesis: z.string().min(1).max(280),
+	// Whether the assertion is expected to pass on a healthy app. For
+	// adversarial-mode variants, `shouldPass: false` means "the app
+	// should reject this input"; the assertion engine flips its sense
+	// accordingly when scoring.
+	shouldPass: z.boolean(),
+	assertion: z.object({
+		spec: AssertionSpecSchema,
+		fallbackPrompt: z.string().min(1).max(280),
+	}),
+	fieldOverrides: z.array(FieldOverridePairSchema),
+	// Kept from V1 — many existing UI surfaces still render `family`
+	// for sorting and color-coding. The Phase-4 modes are richer but
+	// orthogonal to the family taxonomy; we map mode → likely family
+	// in the prompt and let the model fill it in.
+	family: VariantFamilySchema,
+	fragility: z.enum(['low', 'medium', 'high']),
+});
+
+export const TestVariantV2Schema = TestVariantV2WireSchema.transform((v) => {
+	const map: Record<string, string> = {};
+	for (const o of v.fieldOverrides) map[String(o.stepIndex)] = o.value;
+	return { ...v, fieldOverrides: map };
+});
+export type TestVariantV2 = z.infer<typeof TestVariantV2Schema>;
+
+export const GenerateMatrixV2ResultSchema = z.object({
+	variants: z.array(TestVariantV2WireSchema).min(1).max(60),
+});
+
+export interface GenerateMatrixWithContractInput extends GenerateMatrixInput {
+	/**
+	 * Required for V2. The senior-QA contract synthesized by
+	 * `synthesizeFlowWithContract`. Variants must cite a behaviorId
+	 * from this contract; un-cited variants are dropped post-parse.
+	 */
+	featureContract: FeatureContract;
+	/**
+	 * Per-mode targets (variant counts). Defaults to a balanced spread.
+	 * The route can override (e.g. cheap-tier orgs get fewer stress
+	 * variants).
+	 */
+	modeTargets?: Partial<Record<VariantMode, number>>;
+}
+
+const SYSTEM_PROMPT_V2 = `You are a senior QA engineer designing a test plan for a feature.
+
+Inputs you receive:
+- The flow document (recorded interaction summary).
+- A FEATURE CONTRACT: structured description of what the feature does (inputs, expected behaviors with Given/When/Then, invariants).
+- A page screenshot.
+- The full inventory of form controls on the page (touched + untouched).
+
+Output strict JSON: an array of test variants. Each variant exercises ONE behavior from the contract under ONE testing mode. The plan you produce becomes the cells of a behavior x mode grid in the report (LLD §15.2 two-axis verdict).
+
+TESTING MODES (REQUIRED — every variant has exactly one):
+- verify: Reproduce the recorded interaction with realistic data; expected to PASS. Confirms the behavior works at all. 1 verify variant per behavior is usually enough.
+- edge: Boundary or near-boundary inputs (empty, max-length, zero, last allowed option, off-by-one). Expected to PASS — the app should handle these correctly. 1-2 edge variants per behavior.
+- stress: Volume / repetition / concurrency-shaped variants (many filters at once, very large numbers within bounds, rapid retries). Expected to PASS. 1 stress variant per behavior when meaningful.
+- adversarial: Hostile input — injection payloads, unicode confusables, prompt-injection, format-violation, length bombs. Expected to be REJECTED (shouldPass: false). 1-2 adversarial variants per behavior, ONLY for inputs where rejection is meaningful (don't run adversarial against a fixed-choice radio).
+- invariant: Variants that exercise the contract's INVARIANTS (page doesn't crash, no 5xx, submit disabled when required empty, etc.). Not tied to a specific behavior — use behaviorId="invariant-<short-name>" matching one of the contract's invariants.
+
+CONTROL-AWARE RULES (CRITICAL):
+- Fixed-choice fields (controlType=radio|select|checkboxGroup with availableOptions): ONLY emit values from availableOptions. NO whitespace/unicode/encoding overrides — the browser cannot store them. For these fields, edge=last-allowed-option, adversarial=NOT MEANINGFUL (skip).
+- Numeric fields with min/max: edge variants MUST hit exact bounds (min, min-1, max, max+1).
+- Text fields with maxLength: edge variants MUST hit exact bounds (length=maxLength, length=maxLength+1).
+- Sensitive fields (controlType=password OR isSensitive=true): NO overrides at all — the recorded value stays.
+
+ASSERTIONS (every variant gets one):
+The assertion is what the replay engine will check after the variant runs. Pick the cheapest deterministic spec that captures the behavior's observableOutcome:
+
+  url_matches: { pattern }                        // for navigations
+  dom_text_present: { selector?, text }           // app rendered an expected string
+  dom_text_absent: { selector?, text }            // a blocked input did NOT echo
+  dom_count: { selector, op, value }              // table row count, matches expected
+  row_content_match: { selector, columnIndex?, expectedValue }   // table row contents
+  console_no_errors: {}                           // no console.error during the run
+  no_network_5xx: {}                              // no 5xx responses observed
+  page_load_no_crash: {}                          // page DOM is non-empty after action
+  screenshot_judge: {}                            // last-resort LLM vision verdict
+
+Always include a 1-sentence \`fallbackPrompt\` describing what a human would check — used only when the deterministic spec is inconclusive (assertion engine LLM fallback).
+
+shouldPass:
+- verify / edge / stress / invariant variants: true (app should handle this correctly)
+- adversarial variants: false (app should REJECT this input — assertion's success means rejection happened)
+
+QUALITY BAR:
+- Cover EVERY behavior in expectedBehaviors with at least 1 verify variant. If you can't cover a behavior, skip the variant and let the report show "unverified".
+- Cover EVERY invariant with 1 invariant variant.
+- Don't generate variants that test things the contract doesn't claim. Don't invent behaviors.
+- Don't over-generate adversarial variants on fixed-choice fields — produce 0 there, more on text fields.
+- Each variant must reference a behaviorId from the contract (or "invariant-<name>" for invariant mode).
+
+family: pick the closest V1 family for backwards-compat (happy_path | boundary | format | encoding | adversarial | locale | state | auth).
+
+Don't include any preamble. Strict JSON only.`;
+
+function formatFeatureContract(contract: FeatureContract): string {
+	const inputLines = contract.inputs.map((i) => {
+		const dom = Array.isArray(i.domain)
+			? `[${i.domain.join(', ')}]`
+			: i.domain;
+		const cons: string[] = [];
+		if (i.constraints) {
+			const c = i.constraints;
+			if (c.minLength !== undefined) cons.push(`minLength=${c.minLength}`);
+			if (c.maxLength !== undefined) cons.push(`maxLength=${c.maxLength}`);
+			if (c.min !== undefined) cons.push(`min=${c.min}`);
+			if (c.max !== undefined) cons.push(`max=${c.max}`);
+			if (c.pattern !== undefined) cons.push(`pattern=${JSON.stringify(c.pattern)}`);
+		}
+		const consStr = cons.length ? ` {${cons.join(',')}}` : '';
+		const dflt = i.defaultValue ? ` default=${JSON.stringify(i.defaultValue)}` : '';
+		return `  - ${i.name} (${i.controlType}) domain=${dom}${consStr}${dflt}`;
+	});
+
+	const behaviorLines = contract.expectedBehaviors.map(
+		(b) =>
+			`  - id=${b.id} importance=${b.importance}\n      Given ${b.given}\n      When ${b.when}\n      Then ${b.then}\n      Observable: ${b.observableOutcome}`,
+	);
+
+	const invariantLines = contract.invariants.map((i, idx) => `  ${idx + 1}. ${i}`);
+
+	return [
+		`FEATURE CONTRACT — ${contract.featureName}`,
+		'',
+		'Inputs:',
+		inputLines.length ? inputLines.join('\n') : '  (none)',
+		'',
+		'Expected behaviors:',
+		behaviorLines.length ? behaviorLines.join('\n') : '  (none)',
+		'',
+		'Invariants:',
+		invariantLines.length ? invariantLines.join('\n') : '  (none)',
+	].join('\n');
+}
+
+const USER_PROMPT_TEMPLATE_V2 = (input: GenerateMatrixWithContractInput) => {
+	const inputSteps = input.flow.steps
+		.filter(
+			(s) =>
+				s.action === 'input' || s.action === 'select' || s.controlType !== undefined,
+		)
+		.map(
+			(s) =>
+				`  step[${s.index}] action=${s.action} intent=${JSON.stringify(s.intent)} recordedValue=${
+					s.recordedValue ? JSON.stringify(s.recordedValue) : 'null'
+				}${formatControlContext(s)}${
+					s.isSensitive ? ' (sensitive — DO NOT GENERATE OVERRIDES)' : ''
+				}`,
+		)
+		.join('\n');
+
+	const pageControlsSection =
+		input.flow.pageControls && input.flow.pageControls.length > 0
+			? `\n\nALL FORM CONTROLS ON THE PAGE:\n${input.flow.pageControls.map(formatPageControl).join('\n')}`
+			: '';
+
+	// Default mode targets — total ~12 variants. Keeps cost predictable
+	// (~1 matrix-gen call ≈ $0.20 at high reasoning) while giving the
+	// 4-mode UX visible coverage. Route can override.
+	const targets = {
+		verify: input.modeTargets?.verify ?? 3,
+		edge: input.modeTargets?.edge ?? 3,
+		stress: input.modeTargets?.stress ?? 2,
+		adversarial: input.modeTargets?.adversarial ?? 2,
+		invariant: input.modeTargets?.invariant ?? 2,
+	};
+	const targetTotal =
+		targets.verify + targets.edge + targets.stress + targets.adversarial + targets.invariant;
+
+	return `Flow: ${input.flow.name}
+${input.flow.description ? `Description: ${input.flow.description}` : ''}
+
+${formatFeatureContract(input.featureContract)}
+
+Steps the user performed (overridable input fields with UI-shape metadata):
+${inputSteps || '  (no input fields — focus on state/locale variants and invariants)'}
+
+Full step list for context:
+${input.flow.steps.map((s) => `  step[${s.index}] action=${s.action} intent=${s.intent}`).join('\n')}${pageControlsSection}
+
+Generate a test plan with approximately ${targetTotal} variants distributed roughly as:
+  verify: ${targets.verify}     (one per behavior; reproduces recorded path with realistic data)
+  edge: ${targets.edge}        (boundary / near-boundary; expected to pass)
+  stress: ${targets.stress}      (volume / repetition; expected to pass)
+  adversarial: ${targets.adversarial} (hostile input; expected to be REJECTED — shouldPass=false)
+  invariant: ${targets.invariant}    (cross-cutting properties from the contract's invariants)
+
+Skip any mode for behaviors where it's not meaningful (e.g. don't generate adversarial for a fixed-choice radio). It's better to have 8 high-signal variants than 12 weak ones.`;
+};
+
+export async function generateTestMatrixWithContract(
+	input: GenerateMatrixWithContractInput,
+): Promise<{
+	variants: TestVariantV2[];
+	model: string;
+	usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+}> {
+	const client = getLlmClient();
+	const provider = getProvider();
+	const userPromptText = USER_PROMPT_TEMPLATE_V2(input);
+
+	const userContent: OpenAI.Chat.Completions.ChatCompletionUserMessageParam['content'] =
+		input.screenshotUrl
+			? [
+					textContent(userPromptText),
+					imageContent({
+						url: input.screenshotUrl,
+						detail: input.screenshotDetail ?? 'high',
+					}),
+				]
+			: userPromptText;
+
+	if (process.env.FLOWLENS_LOG_MATRIX_PROMPT === '1') {
+		console.info(
+			`[phase4:matrix-gen] sending ${input.screenshotUrl ? 'vision' : 'text-only'} prompt for flow=${input.flow.id} ` +
+				`featureName=${JSON.stringify(input.featureContract.featureName)} ` +
+				`behaviors=${input.featureContract.expectedBehaviors.length} ` +
+				`invariants=${input.featureContract.invariants.length}`,
+		);
+	}
+
+	const tryModel = async (model: string) => {
+		const wantsReasoning =
+			provider === 'azure'
+				? /^(o\d|gpt-5)/i.test(model)
+				: model.startsWith('o');
+		const response = await client.chat.completions.parse({
+			model,
+			messages: [
+				{ role: 'system', content: SYSTEM_PROMPT_V2 },
+				{ role: 'user', content: userContent },
+			],
+			response_format: zodResponseFormat(GenerateMatrixV2ResultSchema, 'TestMatrixV2'),
+			...(wantsReasoning
+				? {
+						reasoning_effort:
+							((process.env.FLOWLENS_MATRIX_REASONING_EFFORT as
+								| 'low'
+								| 'medium'
+								| 'high'
+								| undefined) ?? 'high') as 'low' | 'medium' | 'high',
+					}
+				: {}),
+		});
+		const choice = response.choices[0];
+		if (!choice?.message.parsed) {
+			throw new Error(
+				`Phase-4 matrix generator returned no parsed message (refusal=${choice?.message.refusal ?? 'none'})`,
+			);
+		}
+
+		// Drop variants citing unknown behaviorIds. Loud-warn so the
+		// LLM hallucinations are visible in logs but the run still
+		// produces a usable plan. Invariant-mode variants get a free
+		// pass — they cite "invariant-<...>" tokens that we don't
+		// strictly check against the contract list (the contract's
+		// invariants are free-form strings, not IDs).
+		const knownBehaviorIds = new Set(
+			input.featureContract.expectedBehaviors.map((b) => b.id),
+		);
+		const dropped: string[] = [];
+		const variants: TestVariantV2[] = choice.message.parsed.variants
+			.filter((v) => {
+				if (v.mode === 'invariant') return true;
+				if (knownBehaviorIds.has(v.behaviorId)) return true;
+				dropped.push(`${v.name} (cited unknown behaviorId=${v.behaviorId})`);
+				return false;
+			})
+			.map((v) => {
+				const map: Record<string, string> = {};
+				for (const o of v.fieldOverrides) map[String(o.stepIndex)] = o.value;
+				return { ...v, fieldOverrides: map };
+			});
+
+		if (dropped.length > 0) {
+			console.warn(
+				`[phase4:matrix-gen] dropped ${dropped.length} variant(s) with unknown behaviorIds: ${dropped.join('; ')}`,
+			);
+		}
+
+		console.info(
+			`[phase4:matrix-gen] flow=${input.flow.id} model=${model} ` +
+				`generated=${variants.length} (verify=${variants.filter((v) => v.mode === 'verify').length} ` +
+				`edge=${variants.filter((v) => v.mode === 'edge').length} ` +
+				`stress=${variants.filter((v) => v.mode === 'stress').length} ` +
+				`adversarial=${variants.filter((v) => v.mode === 'adversarial').length} ` +
+				`invariant=${variants.filter((v) => v.mode === 'invariant').length}) ` +
+				`tokens=${response.usage?.total_tokens ?? 0}`,
+		);
+
+		return {
+			variants,
+			model,
+			usage: {
+				promptTokens: response.usage?.prompt_tokens ?? 0,
+				completionTokens: response.usage?.completion_tokens ?? 0,
+				totalTokens: response.usage?.total_tokens ?? 0,
+			},
+		};
+	};
+
+	try {
+		return await tryModel(MODELS.matrixGenerator);
+	} catch (err) {
+		const msg = (err as Error).message ?? '';
+		if (
+			msg.includes('rate_limit') ||
+			msg.includes('model_not_found') ||
+			msg.includes('model not found') ||
+			msg.includes('does not exist')
+		) {
+			console.warn(
+				`[phase4:matrix-gen] ${MODELS.matrixGenerator} unavailable, falling back to ${MODELS.matrixGeneratorFallback}: ${msg}`,
 			);
 			return await tryModel(MODELS.matrixGeneratorFallback);
 		}

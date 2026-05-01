@@ -56,17 +56,25 @@ export type AssertionKind = z.infer<typeof AssertionKindSchema>;
  *  - `screenshot_judge`   — pure LLM vision fallback; `fallbackPrompt`
  *    on the parent `AssertionSchema` carries the English claim.
  */
+// NOTE on .nullable() vs .optional() in this file:
+// AssertionSpecSchema is sent to OpenAI as a `response_format` for the
+// Phase 4 matrix generator. OpenAI's strict structured-outputs API
+// requires every property in `properties` to also be in `required` —
+// `.optional()` is rejected, only `.nullable()` is allowed for "no
+// value". We therefore use `.nullable()` everywhere here. Consumers
+// that read these specs from the DB (assertion engine, web UI) treat
+// null exactly as if the field were missing.
 export const AssertionSpecSchema = z.union([
 	z.object({ kind: z.literal('url_matches'), pattern: z.string() }),
 	z.object({
 		kind: z.literal('dom_text_present'),
 		text: z.string(),
-		within: z.string().optional(),
+		within: z.string().nullable(),
 	}),
 	z.object({
 		kind: z.literal('dom_text_absent'),
 		text: z.string(),
-		within: z.string().optional(),
+		within: z.string().nullable(),
 	}),
 	z.object({
 		kind: z.literal('dom_count'),

@@ -48,6 +48,73 @@ Field guide:
 
 Don't speculate beyond what the screenshot, controls, and step narrations show. Don't include any preamble. Strict JSON only.`;
 
+/**
+ * Phase 4 / Tier 2 — Feature Contract synthesis prompt.
+ *
+ * Same inputs as SYNTHESIZE_SYSTEM_PROMPT but adds a `featureContract`
+ * block that the senior-QA matrix-gen reasons against. The contract is
+ * the LLM's structured understanding of "what does this feature do" —
+ * inputs, expected behaviors, invariants — independent of the recorded
+ * trace's specifics.
+ *
+ * Behaviors are Given/When/Then triples with an `observableOutcome` that
+ * the assertion engine (Tier 3) can later verify. Each behavior gets a
+ * stable ID so verdicts can be aggregated per-behavior across modes.
+ */
+export const SYNTHESIZE_WITH_CONTRACT_SYSTEM_PROMPT = `You are a senior QA engineer synthesizing a recorded user flow.
+
+Inputs you receive:
+- The site origin.
+- An optional cached site model (high-level understanding of the site).
+- An optional page screenshot showing the application surface the user recorded against.
+- An optional inventory of ALL form controls visible on the page (touched + untouched).
+- A list of narrated steps with intent + expected outcome + criticality + recordedValue + controlType + availableOptions.
+
+Output strict JSON with TWO things: the flow document AND a structured Feature Contract.
+
+PART A — Flow document (same as before):
+- name: short imperative title (max ~60 chars), specific to the recorded interaction.
+- description: 1-2 sentences grounded in the screenshot + controls + recorded values.
+- preconditions: state that must be true before the flow runs.
+- postconditions: state that must be true after the flow runs successfully.
+- fragilityHints: 0-5 likely-failure-mode notes.
+- stepRevisions: indices where you'd improve the per-step narration.
+
+PART B — featureContract (the Feature Contract):
+This is the universal description of what the FEATURE does — independent of this specific recording. Think like a senior QA engineer documenting the feature for a test plan.
+
+  featureName: short noun phrase ("Course Filter Table", "Login Form", "Multi-step Checkout").
+
+  inputs: every form control that materially affects the feature's output.
+    For each input, emit:
+      name: human label or control name.
+      controlType: textInput | numberInput | textarea | select | radioGroup | checkbox | checkboxGroup | submit | button | unknown.
+      domain: 'text', 'number', or an explicit array of allowed string values for fixed-choice controls (radio/select/checkbox).
+      constraints: optional { minLength, maxLength, min, max, pattern } pulled from control metadata.
+      defaultValue: the value the control had at recording start (null if empty).
+    Include UNTOUCHED controls if they're on the same form/page as the recorded interaction — they're part of the feature's input surface.
+
+  expectedBehaviors: 2-6 Given/When/Then triples describing what the feature should do. Each behavior MUST be:
+    - GROUNDED in the recorded interaction OR in obvious feature semantics from the screenshot + controls. Don't invent behaviors that the user didn't exercise and that aren't visible on the page.
+    - OBSERVABLE: the 'observableOutcome' must be something the assertion engine could check later (DOM text, URL, table row count, validation message, console state). Avoid vague outcomes like "the user is happy".
+    - INDEPENDENT: each behavior covers one aspect; don't bundle multiple assertions into one.
+    Format:
+      id: stable kebab-case identifier ("behavior-language-narrows-table", "behavior-required-fields-validate").
+      given: setup ("When the courses table is loaded with all filters off").
+      when: action ("and the user selects Language=Java").
+      then: expected outcome ("the table shows only Java courses").
+      observableOutcome: precise check ("Every visible row's Language column equals 'Java'").
+      importance: 'critical' (data correctness, persistence, navigation) or 'normal' (cosmetic, optional).
+
+  invariants: 1-4 properties that should ALWAYS hold regardless of input — e.g. "The table never crashes", "The submit button is disabled when required fields are empty", "No 5xx network responses occur during normal use". These map to the 'invariant' test mode (Tier 2b).
+
+Quality bar:
+- Don't overfit to this exact recording: behaviors describe the feature, not the trace.
+- Don't speculate beyond what's visible. If the screenshot shows a Sort dropdown but the user didn't touch it, you may include it as an input but DON'T invent a "sort changes order" behavior unless the user demonstrated it.
+- Behavior IDs must be unique within the contract.
+
+Don't include any preamble. Strict JSON only.`;
+
 export const SIBLINGS_SYSTEM_PROMPT = `You suggest sibling test flows (negative paths and adjacent variants) after a user records one happy-path flow.
 
 Goal: each sibling tests something the recorded flow does NOT, but on the same site/feature surface. The user will run these autonomously — no recording needed.
