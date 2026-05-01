@@ -20,7 +20,7 @@
  *     OpenAI-compatible path covers 100% of traffic.
  */
 import OpenAI, { AzureOpenAI } from 'openai';
-import { getProvider } from './provider.ts';
+import { getProvider } from './provider';
 
 declare global {
 	// Cached singletons to avoid reconstructing on every call site, while

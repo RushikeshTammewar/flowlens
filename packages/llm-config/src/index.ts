@@ -30,9 +30,11 @@
  *   gpt-4.1-mini — only if GPT-5-mini unavailable
  */
 
-export type { LlmProvider } from './provider.ts';
-import { getProvider } from './provider.ts';
-export { getProvider } from './provider.ts';
+// Bare specifiers — see cookies-vault/src/index.ts for the rationale
+// (works for Next/Webpack/esbuild bundlers AND tsx-driven Node CLIs).
+export type { LlmProvider } from './provider';
+import { getProvider } from './provider';
+export { getProvider } from './provider';
 
 /**
  * Per-stage provider → model name mapping. Keep in sync with
@@ -164,4 +166,4 @@ export function modelTableSnapshot(): Record<ModelKey, string> {
 	return out;
 }
 
-export { getLlmClient, hasLlmCredentials } from './client.ts';
+export { getLlmClient, hasLlmCredentials } from './client';
