@@ -11,6 +11,14 @@ import {
 import type { FlowStep } from './flow';
 import type { ChromeCookie, StorageSnapshot } from './cookie';
 import type { IntentReport, VariantTestData } from './intent';
+// Phase 4 / Tier 1 — additive jsonb payload typings. Imported as types so
+// the runtime drizzle module graph is unchanged.
+// Feature flag: FLOWLENS_PHASE4_ENABLED
+// Migration item (LLD §19): rows 2, 4, 9 (jsonb columns); row 6 also reads
+// AssertionEval into the sidecar contract (Tier 3).
+import type { FeatureContract } from './feature-contract';
+import type { Assertion, AssertionEval } from './assertion';
+import type { BehaviorVerdict } from './behavior-verdict';
 
 export const orgs = pgTable('orgs', {
 	id: uuid('id').primaryKey().defaultRandom(),
@@ -27,6 +35,12 @@ export const orgs = pgTable('orgs', {
 	// before kicking off the o3 / batch fan-out.
 	matrixGenBudgetUsdMicro: integer('matrix_gen_budget_usd_micro').default(500_000).notNull(),
 	matrixBatchBudgetUsdMicro: integer('matrix_batch_budget_usd_micro').default(2_000_000).notNull(),
+	// Phase 4 / Tier 1 (LLD §19 row 1) — free-tier feature cap. Reuses
+	// `monthlyRunsResetAt` above for the rollover timestamp; introduces its
+	// own counter so a flow's RUN budget and its FEATURE budget are
+	// independently throttled. Default 3 features/month for free orgs.
+	monthlyFeatureCap: integer('monthly_feature_cap').default(3).notNull(),
+	monthlyFeaturesConsumed: integer('monthly_features_consumed').default(0).notNull(),
 	createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -124,6 +138,10 @@ export const flows = pgTable('flows', {
 	// Phase 3.5c: structured IntentReport from o3 reasoning classifier.
 	// Drives intent-aware variant generation + variant-aware T3 judging.
 	intentReport: jsonb('intent_report').$type<IntentReport>(),
+	// Phase 4 / Tier 1 (LLD §19 row 2) — structured FeatureContract that
+	// supersedes `description` for the new compile pipeline. NULL on
+	// legacy flows; readers fall back to `description` when null.
+	featureContract: jsonb('feature_contract').$type<FeatureContract>(),
 	// Cumulative LLM cost spent on the matrix pipeline for THIS flow
 	// (intent classify + variant gen + per-variant data gen). Enforced
 	// against orgs.matrixGenBudgetUsdMicro before each call.
@@ -256,6 +274,21 @@ export const testVariants = pgTable(
 		// field. Variant gen describes "what to test"; this stores "the
 		// concrete hostile string we feed in".
 		testData: jsonb('test_data').$type<VariantTestData>(),
+		// Phase 4 / Tier 1 (LLD §19 row 4) — 4-mode variant metadata. All
+		// nullable so legacy variants (generated before the new matrix path
+		// shipped) keep working; matrix-gen v2 populates them. `family`
+		// above stays for back-compat. `behaviorId` is a soft FK to
+		// `flow.featureContract.expectedBehaviors[].id` — no DB constraint
+		// because the contract is stored as jsonb. `shouldPass` defaults
+		// true so a variant without explicit polarity is treated as a
+		// positive (verify) case.
+		mode: text('mode', {
+			enum: ['verify', 'edge', 'stress', 'adversarial', 'invariant'],
+		}),
+		behaviorId: text('behavior_id'),
+		assertion: jsonb('assertion').$type<Assertion>(),
+		shouldPass: boolean('should_pass').default(true).notNull(),
+		riskHypothesis: text('risk_hypothesis'),
 		createdAt: timestamp('created_at').defaultNow().notNull(),
 	},
 	(t) => ({
@@ -293,6 +326,17 @@ export const runBatches = pgTable(
 		// "spent $0.43 of $2.00 cap" in the UI without a join.
 		budgetCapUsdMicro: integer('budget_cap_usd_micro'),
 		aiClusterSummary: text('ai_cluster_summary'),
+		// Phase 4 / Tier 1 (LLD §19 row 9) — two-axis verdict aggregation.
+		// `behaviorVerdicts` is the per-behavior rollup the report renders
+		// row-by-row; the four `*_verified_count`/`*_total_count` integers
+		// are the headline pill ("Correctness 9/9 · Robustness 23/27").
+		// Default 0/null so legacy batches (no contract) still load; the
+		// aggregator (Tier 4) populates them at batch completion.
+		behaviorVerdicts: jsonb('behavior_verdicts').$type<BehaviorVerdict[]>(),
+		correctnessVerifiedCount: integer('correctness_verified_count').default(0).notNull(),
+		correctnessTotalCount: integer('correctness_total_count').default(0).notNull(),
+		robustnessVerifiedCount: integer('robustness_verified_count').default(0).notNull(),
+		robustnessTotalCount: integer('robustness_total_count').default(0).notNull(),
 		createdAt: timestamp('created_at').defaultNow().notNull(),
 	},
 	(t) => ({
@@ -351,6 +395,11 @@ export const stepResults = pgTable(
 		llmStepsUsed: integer('llm_steps_used').default(0).notNull(),
 		llmCostUsdMicro: integer('llm_cost_usd_micro').default(0).notNull(),
 		errorMessage: text('error_message'),
+		// Phase 4 / Tier 1 (LLD §19 row 6) — per-step assertion eval. NULL
+		// for steps whose variant carries no step-targeted assertion (which
+		// is every legacy step). The sidecar (Tier 3) writes this when the
+		// assertion engine runs against a single step's CDP capture.
+		assertionEval: jsonb('assertion_eval').$type<AssertionEval>(),
 	},
 	(t) => ({
 		runStepIdx: index('step_results_run_step_idx').on(t.runId, t.stepIndex),

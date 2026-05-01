@@ -7,3 +7,9 @@ export * from './recording';
 export * from './events';
 export * from './intent';
 export * from './state-snapshot';
+// Phase 4 / Tier 1 — additive types (FLOWLENS_PHASE4_ENABLED). Behaviour-
+// neutral on import: each module is self-contained and only references
+// existing schemas (ControlType, ControlConstraints) for the inputs union.
+export * from './feature-contract';
+export * from './assertion';
+export * from './behavior-verdict';

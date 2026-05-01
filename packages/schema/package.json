@@ -13,10 +13,13 @@
     "./flow": "./src/flow.ts",
     "./run": "./src/run.ts",
     "./recording": "./src/recording.ts",
-    "./cookie": "./src/cookie.ts",
-    "./intent": "./src/intent.ts",
-    "./state-snapshot": "./src/state-snapshot.ts"
-  },
+		"./cookie": "./src/cookie.ts",
+		"./intent": "./src/intent.ts",
+		"./state-snapshot": "./src/state-snapshot.ts",
+		"./feature-contract": "./src/feature-contract.ts",
+		"./assertion": "./src/assertion.ts",
+		"./behavior-verdict": "./src/behavior-verdict.ts"
+	},
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "echo 'lint OK'"
