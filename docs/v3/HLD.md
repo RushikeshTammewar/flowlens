@@ -8,13 +8,13 @@
 
 ## TL;DR
 
-Flowlens v3 is a no-code, AI-driven QA tool. A user installs a Chrome extension, clicks "Record" on any website, demonstrates a flow once, and from then on Flowlens replays it on demand on Browser Use Cloud — verifying both that the flow's intent succeeded and that the UI hasn't drifted. No selectors. No tests to maintain. The LLM is the QA engineer; the recording is the user story.
+Flowlens v3 is the AI senior QA engineer that learns your features and tests them like a human would — not by replaying scripts, but by reasoning about what each feature is meant to do and proving it works across the four ways software actually breaks. A user records a feature once in any web app; Flowlens synthesizes a **Feature Contract** (inputs, expected behaviors, invariants) and runs a **four-mode test plan** (Verify / Edge / Stress / Adversarial) on Browser Use Cloud. The output is a **two-axis verdict** — Correctness (does it work as claimed?) and Robustness (does it survive what users actually do?). No selectors. No tests to maintain. The LLM is the QA engineer; the recording is the brief.
 
 ---
 
 ## 1. The product in one paragraph
 
-A user demonstrates a flow once in their own browser. We capture the demonstration as structured data (DOM events, screenshots, cookies, storage), turn it into a semantic Flow document with an LLM, and run it on demand on a hosted browser. Each replay is an LLM-driven agent that *thinks* through every step, using the recording as a strong prior and the live page as ground truth. Verification is layered: deterministic checks for crashes, an LLM judge for intent correctness, and (Pro tier) visual diff for regression. Reports live both in the extension and on a web dashboard. Cookies are user-supplied via the same extension, refreshed in place when they expire.
+A user demonstrates a feature once in their own browser. We capture the demonstration as structured data (DOM events, screenshots, cookies, storage, page-wide control inventory), and an LLM synthesizes a **Feature Contract**: a structured, universal description of inputs, 3–7 testable expected behaviors, and invariants that hold across every input. The user reviews and approves the contract (review-only in v1; re-record if it's wrong), then a test-plan generator expands each behavior into 1–2 variants per applicable mode — Verify, Edge, Stress, Adversarial, plus cross-cutting invariants — and the run executes on a hosted browser. Each variant carries an explicit `assertion` (concrete observable expectation) and a `shouldPass` signal; the replay engine drives the agent, captures evidence, and judges pass/fail per variant. The final report is a per-feature grid: rows are behaviors, columns aggregate to the **two-axis verdict** (Correctness ≈ verify+edge; Robustness ≈ stress+adversarial), with an AI-summarized debugging analysis at the bottom. Reports live both in the extension and on a web dashboard. Cookies are user-supplied via the same extension, refreshed in place when they expire.
 
 ---
 
@@ -30,14 +30,24 @@ A user demonstrates a flow once in their own browser. We capture the demonstrati
 ### Problems we solve
 
 
-| Today                                                   | With Flowlens                   |
-| ------------------------------------------------------- | ------------------------------- |
-| Writing Cypress / Playwright tests takes hours per flow | Record once, ~3 minutes         |
-| Tests break on every UI tweak                           | LLM re-finds elements by intent |
-| LogRocket / FullStory show recordings, not tests        | We *test*, not just monitor     |
-| QA contractors are slow and expensive                   | Cloud replay is ~$0.30/run      |
-| No regression visibility between deploys                | Cross-run drift analyzer        |
+| Today                                                                | With Flowlens                                                                                |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Writing Cypress / Playwright tests takes hours per flow              | Record a feature in ~3 minutes; Flowlens designs the test plan                               |
+| Tests verify the script you wrote, not the feature you shipped       | Contract-based testing — the spec is "what the feature should do", not "what to click"       |
+| Selenium-based AI testing (mabl, Rainforest) only replays the script | We don't replay — we synthesize new variants across four modes (verify / edge / stress / adversarial) |
+| LogRocket / FullStory show recordings, not tests                     | We *test* before users hit the bug, with a two-axis Correctness × Robustness verdict         |
+| General-purpose AI agents (Devin etc.) wander without grounding      | The recording + contract is ground truth; matrix-gen reasons inside that scope               |
+| QA contractors cost $5K–15K / month                                  | $0.30 / run, always-on, never sleeps                                                         |
+| No regression visibility between deploys                             | Per-feature confidence over time + cross-deploy drift                                        |
 
+
+### How we differ from alternatives
+
+- **Cypress / Playwright** — deterministic but manual; breaks on UI tweaks. We're zero-code, no maintenance.
+- **Selenium-based AI testing (mabl, Rainforest)** — record + replay scripts. We don't replay; we derive a contract and design new tests across four modes.
+- **General-purpose AI agents (Devin et al.)** — wander without grounding. We have the recording + contract as ground truth.
+- **LogRocket / FullStory** — monitoring, not testing. We catch bugs before users hit them.
+- **Manual QA contractors** — $5K–15K / month. We're $0.30 / run, always-on.
 
 ### Why now
 
@@ -56,13 +66,13 @@ The 12-step story from "discovers Flowlens" to "gets daily regression reports". 
 flowchart LR
     S1[1. Install from<br/>Chrome Web Store] --> S2[2. Sign in<br/>via Google/Clerk]
     S2 --> S3[3. Open site,<br/>click Record]
-    S3 --> S4[4. Demonstrate<br/>the flow]
-    S4 --> S5[5. Stop,<br/>review steps]
-    S5 --> S6[6. Save flow]
-    S6 --> S7[7. AI-suggested<br/>sibling flows]
-    S7 --> S8[8. Run now]
+    S3 --> S4[4. Demonstrate<br/>the feature]
+    S4 --> S5[5. Stop &<br/>compile contract]
+    S5 --> S6[6. Review Feature<br/>Contract]
+    S6 --> S7[7. Approve<br/>or re-record]
+    S7 --> S8[8. Auto-run<br/>4-mode test plan]
     S8 --> S9[9. Watch live in<br/>side panel + iframe]
-    S9 --> S10[10. Step-by-step<br/>report]
+    S9 --> S10[10. Two-axis report<br/>Correctness × Robustness]
     S10 --> S11[11. Schedule<br/>daily runs]
     S11 --> S12[12. Get Slack/email<br/>on regression]
 ```
@@ -72,19 +82,19 @@ flowchart LR
 ### Step detail
 
 1. **Install.** One click from the Chrome Web Store. ~5 MB extension. Minimal permissions explained inline.
-2. **Sign in.** Side panel opens automatically. Google sign-in via Clerk. Free tier: 3 sites, 10 flows, 50 runs/month.
-3. **Record.** User navigates to their site. Click extension icon → side panel → "Record flow". A subtle red dot appears in the page corner.
-4. **Demonstrate.** User does whatever they want to test (signup, search, checkout). The extension captures rrweb events + per-action screenshots + cookies + storage. Optional "Note this step" button lets the user tag intent live ("I'm filling email", "this should redirect to dashboard").
-5. **Stop & review.** User clicks "Stop". Side panel shows a horizontal carousel of step screenshots, each with an AI-generated label ("clicked Add to Cart", "filled email field"). User can rename, reorder, delete junk steps (cookie banners, accidental clicks), edit intents.
-6. **Save.** Flow uploads to cloud. AI compiles the recording into a Flow document (~10–20 s with progress bar).
-7. **AI suggests siblings.** Flowlens proposes 1–3 related flows: "Also test guest checkout?", "Also test invalid card?", "Also test cart abandonment?". User opt-ins with checkboxes. These are AI-only flows — no recording needed.
-8. **Run now.** User clicks "Run". Side panel switches to "Running" view.
-9. **Watch live.** Side panel shows step-by-step progress (SSE) + an iframe of the cloud browser doing the work (`liveUrl` from BU Cloud). User can pause, stop, or just watch.
-10. **Report.** Run completes. Side panel shows the per-step verdict: passed / failed / flaky / blocked-auth. Click any step → screenshot diff (recorded vs replay) + AI judge verdict + console errors. Deep link to full web dashboard report.
+2. **Sign in.** Side panel opens automatically. Google sign-in via Clerk. Free tier: 3 features, 50 runs / month.
+3. **Record.** User navigates to their site. Click extension icon → side panel → "Record feature". A subtle red dot appears in the page corner.
+4. **Demonstrate.** User performs the feature they care about — signup, checkout, search, filter, dashboard, settings, anything. The extension captures rrweb events + per-action screenshots + cookies + storage + a page-wide inventory of controls (radio / select / checkbox / text / number / etc.) on the surfaces touched. Optional "Note this step" button lets the user tag intent live.
+5. **Stop & compile contract.** User clicks "Stop". The recording uploads, and the **contract synthesizer** turns it into a Feature Contract: `featureName`, `inputs` (structured ControlInputs derived from the touched controls + page inventory), 3–7 `expectedBehaviors` (each with given/when/then/observableOutcome), and `invariants` (claims that hold regardless of input — e.g. "Reset clears all filters", "no console errors during the flow"). ~10–20 s with progress bar.
+6. **Review Feature Contract.** Side panel renders the contract: name, inputs, expected behaviors, invariants. The user reads what Flowlens *understood* about the feature — not a step carousel of clicks. **Review-only in v1**: if the contract is wrong, the user re-records (edit-contract is v2).
+7. **Approve.** One click. Approval triggers test-plan generation (matrix-gen): for each behavior, the planner produces 1–2 variants in each applicable mode (Verify, Edge, Stress, Adversarial), plus invariant variants. Each variant carries `task`, `assertion { kind, spec, fallbackPrompt }`, `shouldPass`, and a one-line `riskHypothesis`.
+8. **Auto-run.** No "Run" button to click — approval kicks off the run on Browser Use Cloud. The run UI opens automatically. (Manual re-run is one click from the report.)
+9. **Watch live.** Side panel shows variant-by-variant progress (SSE) and an iframe of the cloud browser doing the work (`liveUrl` from BU Cloud). Per-variant pills colored by mode. User can pause, stop, or just watch.
+10. **Two-axis report.** Run completes. The side panel and dashboard show a per-feature grid: rows = expected behaviors, each with a micro-grid of mode results. Aggregated columns: **Correctness** (verify + edge passing?) and **Robustness** (stress + adversarial passing?). Each failure deep-links to the variant's `assertion`, evidence (screenshot, console log, network trace), and the AI's debugging analysis ("Reset button leaves the Min Enrollments slider populated — invariant 2 violated").
 11. **Schedule.** User toggles "Run daily at 9 AM". Done. Cron-driven via Vercel Cron.
-12. **Get notified.** Slack or email on any regression. Notification includes failing step, AI's diagnosis ("button moved", "API 500"), and link to the run.
+12. **Get notified.** Slack or email on any regression — failing behaviors, the modes that broke, and a link to the run report.
 
-### The "auth refresh" detour (Step 11.5)
+### The "auth refresh" detour (Step 8.5)
 
 Cookies eventually expire. When they do:
 
@@ -117,7 +127,7 @@ flowchart TB
     end
 
     subgraph Storage[Storage layer]
-        DB[(Neon Postgres<br/>users orgs sites flows runs)]
+        DB[(Neon Postgres<br/>users orgs sites features contracts runs)]
         Blob[(Vercel Blob<br/>rrweb screenshots videos)]
         Redis[(Upstash Redis<br/>SSE pubsub queues)]
         Vault[(Encrypted cookie<br/>vault in Postgres)]
@@ -134,7 +144,7 @@ flowchart TB
     end
 
     subgraph LLMs[LLM providers]
-        OpenAI[OpenAI<br/>gpt-4.1 / gpt-4.1-mini / o4-mini]
+        OpenAI[OpenAI<br/>gpt-5.4 / gpt-4.1 / gpt-4.1-mini / o4-mini]
     end
 
     subgraph Notify[Notifications]
@@ -175,12 +185,11 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Rec[Recording bundle:<br/>rrweb + screenshots +<br/>cookies + storage] --> Compile[Compile pipeline:<br/>Flash narration<br/>Pro synthesis]
-    Compile --> Flow[Flow document<br/>in Postgres]
-    Flow --> Replay[Hybrid replay:<br/>tools.act CDP-direct on stable steps<br/>+ browser-use Agent on critical/drifted]
-    Replay --> Report[Step results +<br/>run report]
-    Flow --> Suggest[Sibling-flow<br/>suggester]
-    Suggest --> Replay
+    Rec[Recording bundle:<br/>rrweb + screenshots +<br/>cookies + storage +<br/>control inventory] --> Compile[Compile pipeline:<br/>per-step narration<br/>+ Contract synthesis<br/>+ Matrix-gen test plan]
+    Compile --> Contract[Feature Contract<br/>+ Test Plan<br/>in Postgres]
+    Contract --> Replay[Variant-driven replay:<br/>per-variant task + assertion<br/>tools.act CDP-direct on stable steps<br/>+ browser-use Agent on critical/drifted]
+    Replay --> Verdict[Per-variant pass/fail<br/>aggregated to two-axis verdict<br/>Correctness × Robustness]
+    Verdict --> Report[Per-feature report<br/>+ AI debugging analysis]
 ```
 
 
@@ -200,27 +209,31 @@ sequenceDiagram
     participant API as Cloud API
     participant Compile as Compile Worker
 
-    U->>SP: click "Record flow"
+    U->>SP: click "Record feature"
     SP->>BG: start({tab, site})
     BG->>CS: inject rrweb + recorder
-    BG->>API: POST /flows  (status=recording)
+    BG->>API: POST /features  (status=recording)
     CS-->>BG: rrweb chunks (ndjson, gzipped)
     CS-->>BG: per-action screenshots
+    CS-->>BG: page-wide control inventory
     BG->>API: PUT /recordings/:id/chunks (multipart)
     U->>SP: click "Stop"
     SP->>BG: stop()
-    BG->>API: cookies + storage snapshot
-    BG->>API: POST /flows/:id/compile
+    BG->>API: cookies + storage + inventory snapshot
+    BG->>API: POST /features/:id/compile
     API->>Compile: enqueue compile workflow
-    Compile->>Compile: Flash narration per step
-    Compile->>Compile: Pro flow synthesis
-    Compile->>API: flow ready (websocket/SSE)
-    API->>SP: review screen ready
+    Compile->>Compile: per-step narration (vision)
+    Compile->>Compile: contract synthesis (inputs, behaviors, invariants)
+    Compile->>Compile: matrix-gen — variants per behavior × mode
+    Compile->>API: contract + test plan ready (SSE)
+    API->>SP: contract review screen
 ```
 
 
 
 ### B. Replay flow
+
+A run executes the test plan: every variant is its own scoped replay with a `task` (natural-language replay instruction) and an `assertion` (concrete observable expectation). Per-variant outcomes aggregate up to per-behavior verdicts and finally to the two-axis report.
 
 ```mermaid
 sequenceDiagram
@@ -230,30 +243,39 @@ sequenceDiagram
     participant BU as Browser Use Cloud
     participant LLM as OpenAI (ChatOpenAI)
 
-    SP->>API: POST /runs (flow_id)
+    SP->>API: POST /runs (feature_id, contract_id)
     API->>WF: start run workflow
     WF->>BU: create session w/ profile (cookies + storage)
     BU-->>WF: cdp_url, liveUrl
     WF->>SP: SSE run_started, liveUrl
-    loop each step
-        WF->>BU: get DOM (CDP)
-        WF->>WF: resolve recorded selectors -> live backend_node_id
-        alt resolved cleanly AND not critical
-            WF->>BU: tools.act() CDP-direct (no LLM)
-        else critical OR resolution failed
-            WF->>LLM: Agent loop (intent + ref screenshot + selectors)
-            LLM-->>WF: action choice (backend_node_id)
-            WF->>BU: execute via CDP
+    loop each variant in test plan
+        WF->>SP: SSE variant_started (mode, behaviorId)
+        WF->>BU: navigate + execute variant.task
+        loop each action inside variant
+            WF->>BU: get DOM (CDP)
+            WF->>WF: resolve recorded selectors -> live backend_node_id
+            alt resolved cleanly AND not critical
+                WF->>BU: tools.act() CDP-direct (no LLM)
+            else critical OR resolution failed
+                WF->>LLM: Agent loop (task intent + ref screenshot + selectors)
+                LLM-->>WF: action choice (backend_node_id)
+                WF->>BU: execute via CDP
+            end
         end
         WF->>BU: T1 checks (HTTP, console, JS)
-        opt critical step
-            WF->>LLM: T3 judge (expected vs actual screenshot)
-            LLM-->>WF: verdict
+        WF->>WF: evaluate variant.assertion (kind+spec) over evidence
+        opt assertion needs LLM judge
+            WF->>LLM: judge(assertion, fallbackPrompt, screenshot, log)
+            LLM-->>WF: pass/fail + reason
         end
-        WF->>SP: SSE step_finished
+        WF->>WF: aggregate result vs shouldPass
+        WF->>SP: SSE variant_finished (verdict, evidence)
     end
+    WF->>WF: aggregate variants -> per-behavior Correctness + Robustness
+    WF->>LLM: summarize failures (debugging analysis)
+    LLM-->>WF: per-feature analysis
     WF->>BU: stop session (refund unused minutes)
-    WF->>API: persist report
+    WF->>API: persist two-axis report
     API-->>SP: SSE run_complete
 ```
 
@@ -295,11 +317,13 @@ sequenceDiagram
 
 | Component                          | What it does                                                                                                                                                                                                          | Repo path                                                   |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| **Extension**                      | Records flows, captures cookies, side-panel UI, auth refresh, deep-links to web. WXT + React 19 + Tailwind.                                                                                                            | `apps/extension/`                                           |
-| **Web dashboard + API**            | Marketing site, signed-in app, every HTTP endpoint (recording uploads, flows CRUD, run lifecycle, SSE, cookie refresh, webhooks). Next.js 16 Route Handlers. Owns Drizzle ORM + OpenAI calls + run orchestration.       | `apps/web/`                                                 |
+| **Extension**                      | Records features, captures cookies + control inventory, side-panel UI (record / contract review / live run / report), auth refresh, deep-links to web. WXT + React 19 + Tailwind.                                       | `apps/extension/`                                           |
+| **Web dashboard + API**            | Marketing site, signed-in app, every HTTP endpoint (recording uploads, features + contracts CRUD, run lifecycle, SSE, cookie refresh, webhooks). Next.js 16 Route Handlers. Owns Drizzle ORM + LLM calls + run orchestration. | `apps/web/`                                                 |
 | **Replay worker (Python sidecar)** | FastAPI service that wraps `browser_use`. Exposes `POST /agent-step` (full Agent loop) and `POST /cdp-direct` (resolved selector + `tools.act()`). Deployed separately on Fly.io / Railway / Vercel Sandbox. Phase 3. | `apps/replay-worker/`                                       |
-| **Compile pipeline**               | Recording → Flow document. VLM narration + flow synthesis on Vercel Workflow. Calls OpenAI via `apps/web/src/lib/openai.ts`. Phase 2.                                                                                  | `packages/flow-doc/`                                        |
-| **Replay engine (TS)**             | TS run lifecycle, T1 + T2 + T3 verifiers, profile attach, SSE emission. Delegates each browser action to the Python sidecar over HTTP. Never imports `browser_use`. Phase 3.                                          | `packages/replay-engine/`                                   |
+| **Compile pipeline**               | Recording → **Feature Contract + Test Plan**. Three sub-stages on Vercel Workflow: per-step VLM narration, contract synthesis, matrix-gen test-plan generation. Calls OpenAI via `apps/web/src/lib/openai.ts`. Phase 2. | `packages/flow-doc/`                                        |
+| **Contract synthesizer**           | Sub-component of the compile pipeline. Turns recording + control inventory into the universal contract schema: `featureName`, structured `inputs` (ControlInputs with name + domain), 3–7 `expectedBehaviors` (given/when/then/observableOutcome), `invariants`. Phase 2. | `packages/flow-doc/synthesize/`                             |
+| **Matrix-gen**                     | Sub-component of the compile pipeline. For each `expectedBehavior`, produces 1–2 variants in each applicable mode (Verify / Edge / Stress / Adversarial), plus invariant variants. Each variant carries `task`, `assertion { kind, spec, fallbackPrompt }`, `shouldPass`, `riskHypothesis`. Reasoning-heavy LLM call. Phase 2. | `packages/flow-doc/matrix-gen/`                             |
+| **Replay engine (TS)**             | TS run lifecycle. Iterates the test plan variant-by-variant, drives the Python sidecar, evaluates each variant's `assertion` against captured evidence (deterministic checks first, LLM judge as `fallbackPrompt`), aggregates per-behavior verdicts to the two-axis Correctness × Robustness report, emits SSE. Never imports `browser_use`. Phase 3. | `packages/replay-engine/`                                   |
 | **Cookie vault**                   | Capture, encrypt (libsodium per-org keypair), store, push-to-BU-profile, refresh. Phase 2.                                                                                                                            | `packages/cookies-vault/`                                   |
 | **BU Cloud client**                | Typed TS wrapper around Browser Use Cloud v2 REST. Shipped Phase 1.                                                                                                                                                   | `packages/bu-cloud-client/`                                 |
 | **Recorder core**                  | Framework-agnostic rrweb wrapper + screenshot scheduler + selector hardener + sensitive-detect. Used by extension. Phase 2.                                                                                            | `packages/recorder-core/`                                   |
@@ -350,9 +374,10 @@ sequenceDiagram
 
 OpenAI is the only LLM provider we ship with. Model selection is centralized in `apps/web/src/lib/models.ts` and overridable per env via `FLOWLENS_MODEL_*` vars.
 
-- **`gpt-4.1-mini`** — replay agent (browser-use Agent loop), per-step narration (vision), AI judge, test-data generator, sibling-flow generator, sensitive-data classifier fallback. Cheap, fast, vision-capable.
-- **`gpt-4.1`** — whole-flow synthesis, site model, cross-run drift analyzer. Better multi-step reasoning; called rarely.
-- **`o4-mini`** — failure investigator. Reasoning-heavy classification of why a critical step failed (`app_bug | flaky | env | auth`).
+- **`gpt-4.1-mini`** — replay agent (browser-use Agent loop), per-step narration (vision), assertion judge, test-data generator, sensitive-data classifier fallback. Cheap, fast, vision-capable.
+- **`gpt-4.1` (vision)** — **contract synthesis**. Multi-step reasoning over the recording bundle + control inventory + screenshots to produce the universal Feature Contract.
+- **`gpt-5.4` (reasoning_effort=high)** — **matrix-gen brain**. Expanding each `expectedBehavior` into Verify / Edge / Stress / Adversarial variants is genuinely reasoning-heavy: the model has to imagine what *could* go wrong, derive boundary values, and craft assertion specs. We pay for reasoning here because variants directly determine coverage. Called once per feature compile, typically 2–4 calls per feature in practice.
+- **`o4-mini`** — failure investigator. Reasoning-heavy classification of why a critical variant failed (`app_bug | flaky | env | auth`).
 - **ChatBrowserUse** stays available as an opt-in fallback for the replay agent — its provider-side prompt caching is cheaper than OpenAI for very repetitive browser loops, but you trade some control over the agent's reasoning. Ship default is OpenAI; ChatBrowserUse is feature-flagged per org.
 
 ### Notifications
@@ -379,32 +404,48 @@ OpenAI is the only LLM provider we ship with. Model selection is centralized in 
 ## 8. Key design decisions
 
 
-| Decision                                         | Why                                                                                                                                 | Alternative considered                                                                   |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **Record rrweb, not video**                      | Lossless replay, semantic events, ~50× smaller, searchable                                                                          | Pure `tabCapture` MP4 — too heavy, no semantics                                          |
-| **LLM-first replay (with CDP-direct fast path)** | Recording is a *prior*; LLM thinks at every critical step; non-critical steps that resolve cleanly bypass the LLM via `tools.act()` | Pure deterministic CDP — brittle when UI drifts; pure LLM — wastes money on stable steps |
-| **One Browser Use Cloud session per run**        | Simplest cost model, billed per minute, easy to refund                                                                              | Pre-warmed pool — premature optimization                                                 |
-| **Hybrid extension + web split**                 | Side panel for action; web for reports & sharing                                                                                    | Extension-only — too cramped; web-only — no recording UX                                 |
-| **Cookies in encrypted Postgres + BU profile**   | Auditable, rotatable, refreshable in place                                                                                          | Re-pushing cookies on every run — wasteful, racy                                         |
-| **Vercel Workflow for runs**                     | Native pause/resume, retry, idempotency for auth refresh                                                                            | Custom queue + state machine — reinventing the wheel                                     |
-| **No deterministic-only "fast mode" by default** | "Real testing" > "fast macros". Offer fast mode as opt-in.                                                                          | Fast mode default — would attract wrong customer                                         |
-| **Per-step screenshot, not per-tick**            | One screenshot per semantic action, not 30 fps                                                                                      | Continuous video — bandwidth waste                                                       |
-| **Free tier with 50 runs/month**                 | Enough to feel value, not enough to abuse                                                                                           | Trial-only — kills viral growth                                                          |
+| Decision                                                          | Why                                                                                                                                                                                              | Alternative considered                                                                   |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| **Feature Contract as the primary artifact (vs step list)**       | The contract is *what the feature should do*; the recording is just one demonstration of it. Tests reason about claims, not clicks — that's why tests survive UI tweaks.                          | A flat step list — couples tests to one execution path; UI tweak = test break             |
+| **Four-mode test plan per behavior (vs input-fuzzing families)**  | Verify / Edge / Stress / Adversarial mirrors how a senior human QA actually thinks. Random fuzzing finds noise; the four modes are the four *real* failure surfaces.                                | Random input fuzzing — unguided, unprioritized, hard to debug, low signal                  |
+| **Two-axis verdict (Correctness × Robustness)**                   | Splits "does it work?" from "does it survive abuse?". A green Correctness with red Robustness is shippable to a small audience but not to scale — that's a meaningful signal.                       | Single pass/fail — collapses the most useful product distinction we can offer            |
+| **Universal contract schema across all feature types**            | Same schema for signup, search, checkout, dashboard, settings — anywhere we can describe inputs + expected behaviors + invariants. Keeps matrix-gen general and the report consistent.              | Per-vertical templates — explodes maintenance, fragments the report grid                 |
+| **Review-only contract approval in v1 (re-record if wrong)**       | Editing a structured contract well is hard UX; re-recording is fast and unambiguous. We learn from re-record patterns before designing the editor.                                                | In-product contract editor in v1 — high UX risk on first release                          |
+| **Auto-run after contract approval (no separate "Run" click)**     | The user already said "this is what I want tested" by approving. An extra click is friction without information.                                                                                  | Manual run trigger — extra step, no benefit                                                |
+| **Record rrweb, not video**                                       | Lossless replay, semantic events, ~50× smaller, searchable                                                                                                                                       | Pure `tabCapture` MP4 — too heavy, no semantics                                          |
+| **LLM-first replay (with CDP-direct fast path)**                  | Recording is a *prior*; LLM thinks at every critical step; non-critical steps that resolve cleanly bypass the LLM via `tools.act()`                                                              | Pure deterministic CDP — brittle when UI drifts; pure LLM — wastes money on stable steps |
+| **One Browser Use Cloud session per run**                         | Simplest cost model, billed per minute, easy to refund                                                                                                                                           | Pre-warmed pool — premature optimization                                                 |
+| **Hybrid extension + web split**                                  | Side panel for action; web for reports & sharing                                                                                                                                                  | Extension-only — too cramped; web-only — no recording UX                                 |
+| **Cookies in encrypted Postgres + BU profile**                    | Auditable, rotatable, refreshable in place                                                                                                                                                        | Re-pushing cookies on every run — wasteful, racy                                         |
+| **Vercel Workflow for runs**                                      | Native pause/resume, retry, idempotency for auth refresh                                                                                                                                          | Custom queue + state machine — reinventing the wheel                                     |
+| **No deterministic-only "fast mode" by default**                  | "Real testing" > "fast macros". Offer fast mode as opt-in.                                                                                                                                        | Fast mode default — would attract wrong customer                                         |
+| **Per-step screenshot, not per-tick**                             | One screenshot per semantic action, not 30 fps                                                                                                                                                    | Continuous video — bandwidth waste                                                       |
+| **Free tier: 3 features, 50 runs / month**                        | Priced against fractional QA contractors, not per-test infra. Three features is enough for one critical journey + two adjacent ones — the wedge.                                                  | Per-run trial — fights our "always-on" pitch; per-flow tier — wrong unit                  |
 
 
 ---
 
 ## 9. Out of scope (v3)
 
-To stay shippable in 4 weeks:
+What we are *not*:
 
-- Mobile recording (iOS/Android browsers don't support extensions in this way)
-- API-only test recording (no browser involved)
-- Multi-tab cross-origin flows (defer; OAuth + payment provider redirects are the main offenders, handled separately)
-- Visual no-code flow editor (drag-drop steps) — saved flows are editable as text only
-- Self-hosted version
-- Team RBAC beyond Clerk's defaults
-- Custom test data sources (CSV upload, env vars) — comes in Pro v3.1
+- **Not unit / integration tests** — devs own those.
+- **Not load / performance testing** — different tool, different budget.
+- **Not security pentesting** — adversarial mode catches naive issues, not a substitute for proper audits.
+- **Not multi-tenant collab in v1** — solo + small team focus.
+
+To stay shippable in 4 weeks, we also defer:
+
+- **Contract editing in-product** — review-only in v1; re-record if the contract is wrong. Edit-contract is v2.
+- **Cross-site invariant testing** — invariants are scoped to one feature in one site for v1. Site-level rules ("no console error on any page") wait.
+- **Performance testing as a first-class mode** — Stress mode catches *functional* breakage under rapid use, not latency budgets.
+- **Visual regression as a first-class mode** — pixel diffs and AI image diffs come back in v3.1 (was previously a tier in v2).
+- Mobile recording (iOS/Android browsers don't support extensions in this way).
+- API-only test recording (no browser involved).
+- Multi-tab cross-origin flows (defer; OAuth + payment provider redirects are the main offenders, handled separately).
+- Self-hosted version.
+- Team RBAC beyond Clerk's defaults.
+- Custom test data sources (CSV upload, env vars) — comes in Pro v3.1.
 
 ---
 
@@ -415,38 +456,40 @@ To stay shippable in 4 weeks:
 | ------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **1**   | Foundations        | pnpm monorepo. Drizzle schema + Zod runtime types. Typed BU Cloud v2 client. OpenAI client + centralized `MODELS`. WXT extension scaffold (stub auth). Next.js 16 web scaffold + `/api/health`. Shared design tokens. ✅ shipped.                                                          |
 | **1.5** | Real auth          | Clerk Google OAuth. Extension token issuance + storage. Replace stub `chrome.storage.local` auth in side panel. Org-scoping middleware in API routes. `pnpm db:push` after Neon `DATABASE_URL` is available.                                                                              |
-| **2**   | Recording → Flow   | rrweb + per-action screenshots + cookies upload, encrypted. Compile pipeline (`gpt-4.1-mini` narration + `gpt-4.1` synthesis) on Vercel Workflow. `data-flowlens-id` injection. Extension review/save UI.                                                                                  |
-| **3**   | Replay + verify    | ✅ shipped. Python sidecar (`apps/replay-worker/`) — Dockerfile + AWS App Runner + Azure Container Apps deploy paths. Hybrid replay engine on BU Cloud (`tools.act()` CDP-direct + `Agent` loop, both via the sidecar). Selector resolution layer. T1 + T3 verifiers. Auth-refresh loop with workflow checkpointing. Side-panel run UI (`liveUrl` iframe + step pills + auth-refresh banner). Per-org budget guardrails + BU Cloud circuit breaker. |
+| **2**   | Recording → Contract | rrweb + per-action screenshots + cookies + page-wide control inventory upload, encrypted. Compile pipeline on Vercel Workflow: `gpt-4.1-mini` per-step narration → `gpt-4.1` contract synthesis → `gpt-5.4` reasoning-high matrix-gen test plan. `data-flowlens-id` injection. Extension contract-review UI (read-only). |
+| **3**   | Replay + verify    | ✅ shipped. Python sidecar (`apps/replay-worker/`) — Dockerfile + AWS App Runner + Azure Container Apps deploy paths. Hybrid replay engine on BU Cloud (`tools.act()` CDP-direct + `Agent` loop, both via the sidecar). Selector resolution layer. Variant-driven loop: per-variant `task` execution, T1 deterministic checks + assertion judge (LLM fallback), per-behavior aggregation to two-axis verdict. Auth-refresh loop with workflow checkpointing. Side-panel run UI (`liveUrl` iframe + variant pills + auth-refresh banner). Per-org budget guardrails + BU Cloud circuit breaker. |
 | **3.5a** | Workflow runtime swap | ✅ shipped. Migrated `compile-recording` and `run-flow` workflows from the Phase 3 fire-and-forget shim to the real Vercel Workflow Devkit (`workflow@4.2.4` + `@workflow/next@4.0.5`). All durable steps now persist + retry; auth-pause uses `createHook(token)` + `sleep('24h')` race; `/api/cookies/refresh` resumes via `resumeHook(token, payload)`. WDK manifest auto-discovers 2 workflows + 18 steps at build time. |
-| **4**   | Dashboard + polish | Web dashboard (sites, flows, runs, public share). T2 visual diff (Pro). Scheduled runs + Slack/email. Chrome Web Store submission. EC2 decommission.                                                                                                                                       |
+| **4**   | Dashboard + polish | Web dashboard (sites, features, contracts, runs with two-axis report, public share). Scheduled runs + Slack/email. Chrome Web Store submission. EC2 decommission. (T2 visual diff and visual regression as a first-class mode are deferred to v3.1 — see §9.)                                                                                                                                       |
 
 
 ---
 
 ## 11. Cost model (per run, summarized)
 
-Recomputed for OpenAI lineup (April 2026 prices: `gpt-4.1-mini` ~$0.40/M input, ~$1.60/M output; `gpt-4.1` ~$2.50/M input, ~$10/M output; `o4-mini` ~$1.10/M input, ~$4.40/M output). The `tools.act()` CDP-direct path on stable steps still skips the LLM entirely.
+Recomputed for the new pipeline (April 2026 prices: `gpt-4.1-mini` ~$0.40/M input, ~$1.60/M output; `gpt-4.1` ~$2.50/M input, ~$10/M output; `gpt-5.4` reasoning-high ~$5/M input, ~$20/M output with reasoning tokens; `o4-mini` ~$1.10/M input, ~$4.40/M output). The `tools.act()` CDP-direct path on stable steps still skips the LLM entirely.
 
-After reconciling the per-step token budget (LLD §5.5):
+The unit of work is now a **per-feature run** (8–15 variants across 4–6 behaviors), not a single step list. Compile is a one-time cost per feature; runs reuse the contract + test plan.
 
-| Phase                                                                                   | Cost (central / guardrail) |
-| --------------------------------------------------------------------------------------- | -------------------------- |
-| Recording compile (one-time per flow)                                                   | ~$0.26                     |
-| Sibling flow generation (per recording)                                                 | ~$0.02                     |
-| Replay run, hybrid mode (default — Agent on critical, CDP-direct on stable)             | **$0.07** central / $0.14 upper |
-| Replay run, fast mode (CDP-direct everywhere we can)                                    | ~$0.04                     |
-| Replay run, full LLM mode (Agent on every step)                                         | ~$0.23                     |
-| Cross-run drift analysis                                                                | ~$0.03 per pair            |
-| Failure investigator (only on critical fail, ~10 % runs)                                | ~$0.06                     |
+| Phase                                                                                       | Cost (central / guardrail)      |
+| ------------------------------------------------------------------------------------------- | ------------------------------- |
+| Per-step VLM narration (`gpt-4.1-mini` vision)                                              | ~$0.06                          |
+| Contract synthesis (`gpt-4.1` over recording bundle + control inventory)                    | ~$0.10                          |
+| Matrix-gen test plan (`gpt-5.4` reasoning_effort=high, 1–2 calls per feature)               | ~$0.10 central / $0.15 upper    |
+| **Total compile per feature (one-time)**                                                    | **~$0.26 central / $0.31 upper** |
+| Replay run, full feature, hybrid mode (~8–15 variants, Agent on critical + CDP-direct)      | **~$0.30 central / $0.50 upper** |
+| Replay run, fast mode (CDP-direct everywhere we can, deterministic assertions only)         | ~$0.15                          |
+| Replay run, full LLM mode (Agent on every variant + LLM judge on every assertion)           | ~$0.70                          |
+| Cross-deploy regression (one feature run + diff)                                            | ~$0.33                          |
+| Failure investigator (only on critical fail, ~10 % runs)                                    | ~$0.06                          |
 
 
 **Credit pool** (granted): **$500 BU Cloud** + **$2,000 OpenAI**. Total runway:
 
-- BU Cloud at $0.0008/run is functionally non-binding (~625K runs on $500).
-- LLM is the binding constraint. At the **$0.07 central** estimate, $2,000 OpenAI buys **~28,500 hybrid replay runs**. At the **$0.14 upper guardrail**, ~14,000 runs.
-- **150–200 closed-beta users** running **2–3 daily flows** for **a month**, plus generous ad-hoc usage — comfortable headroom either way.
+- BU Cloud at ~$0.005 per feature run (longer browser sessions because more variants) is still effectively non-binding (~100K runs on $500).
+- LLM is the binding constraint. At the **$0.30 central** estimate, $2,000 OpenAI buys **~6,600 hybrid feature runs**. At the **$0.50 upper guardrail**, ~4,000 runs.
+- **80–120 closed-beta users** running **2–3 features daily** for **a month**, plus ad-hoc usage and matrix-gen recompiles — fits within the credit pool with a small buffer. Per-org budget guardrails clamp run count automatically.
 
-This gives ~10× the runway of the original Gemini-only plan, with a built-in upper guardrail for cost surprises.
+The cost-per-run is higher than v2's input-fuzzing-family runs, but each run now covers ~10× the surface (4 modes × multiple behaviors instead of a single deterministic replay). Cost-per-bug-caught should drop substantially.
 
 Detailed breakdown: see [LLD §15](LLD.md#15-cost-model-detailed).
 
@@ -455,56 +498,72 @@ Detailed breakdown: see [LLD §15](LLD.md#15-cost-model-detailed).
 ## 12. Risks & mitigations
 
 
-| Risk                                     | Likelihood | Impact                    | Mitigation                                                                                                    |
-| ---------------------------------------- | ---------- | ------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Chrome Web Store rejection / delay       | High       | Blocks GTM                | Apply early in week 4, prep privacy policy, shorten permissions, demo video                                   |
-| Cookie capture privacy concerns          | High       | Trust-killer              | Encrypt at rest, scope to user-recorded origins only, delete on flow delete, audit log, never log values      |
-| Anti-bot detection on cloud replay       | Medium     | Replay false-failures     | BU Cloud stealth Chromium, geo-matched proxy, human-like timing, fall back to "verify on user's browser" mode |
-| LLM cost runaway from stuck agents       | Medium     | Burns $500 in days        | Hard `max_steps` cap, wallclock timeouts, `should_stop_callback`, per-org budget guardrail, BU billing poller |
-| rrweb cross-origin iframe limits         | Medium     | Bad coverage on SSO sites | Document upfront, fallback recording mode that captures screenshots only across iframe boundaries             |
-| Selector drift between record and replay | Medium     | Flaky tests               | 4-tier selector hardening (role+text → testid → CSS → XPath), LLM intent fallback                             |
-| Vercel Workflow GA stability             | Low        | Run reliability           | Have a backup queue+worker fallback, ship behind feature flag                                                 |
-| User records sensitive data into a flow  | High       | Privacy + compliance      | Auto-detect (regex for cards, SSN, JWT) + warn at compile, encrypt-at-rest, redact in UI                      |
+| Risk                                                         | Likelihood | Impact                                | Mitigation                                                                                                                                                                                  |
+| ------------------------------------------------------------ | ---------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Contract accuracy** — AI misunderstands the feature        | High       | Tests measure the wrong thing         | Render the contract clearly at review time (named inputs, behavior given/when/then in plain English); user can re-record if wrong; track contract-edit / re-record rate as a quality metric |
+| **Variant explosion** — 4 modes × N behaviors gets expensive | Medium     | Run cost spikes; report becomes noisy | Mode-aware variant cap (max 2 variants per behavior per mode in v1); per-org budget guardrail; allow Pro to opt into deeper coverage; matrix-gen prompt enforces "1–2 variants per applicable mode" |
+| Chrome Web Store rejection / delay                           | High       | Blocks GTM                            | Apply early in week 4, prep privacy policy, shorten permissions, demo video                                                                                                                  |
+| Cookie capture privacy concerns                              | High       | Trust-killer                          | Encrypt at rest, scope to user-recorded origins only, delete on feature delete, audit log, never log values                                                                                   |
+| Anti-bot detection on cloud replay                           | Medium     | Replay false-failures                 | BU Cloud stealth Chromium, geo-matched proxy, human-like timing, fall back to "verify on user's browser" mode                                                                                |
+| LLM cost runaway from stuck agents                           | Medium     | Burns $500 in days                    | Hard `max_steps` cap, wallclock timeouts, `should_stop_callback`, per-org budget guardrail, BU billing poller                                                                               |
+| rrweb cross-origin iframe limits                             | Medium     | Bad coverage on SSO sites             | Document upfront, fallback recording mode that captures screenshots only across iframe boundaries                                                                                            |
+| Selector drift between record and replay                     | Medium     | Flaky variants                        | 4-tier selector hardening (role+text → testid → CSS → XPath), LLM intent fallback                                                                                                           |
+| Vercel Workflow GA stability                                 | Low        | Run reliability                       | Have a backup queue+worker fallback, ship behind feature flag                                                                                                                                |
+| User records sensitive data into a feature                   | High       | Privacy + compliance                  | Auto-detect (regex for cards, SSN, JWT) + warn at compile, encrypt-at-rest, redact in UI                                                                                                     |
+| **Adversarial mode overreach**                               | Low        | False-positive "security bugs"        | Adversarial variants test *graceful degradation*, not exploitability; framing in the report makes this explicit; we explicitly disclaim being a pentest tool                                  |
 
 
 ---
 
 ## 13. Success metrics (north stars)
 
+The shift from step-based replays to feature-confidence runs means our KPIs measure *confidence delivered*, not *variants executed*.
+
 ### Activation
 
-- ≥ 60 % of users who install the extension save their first flow within 24 h.
-- Median time from install → first saved flow: ≤ 10 min.
+- ≥ 60 % of users who install the extension approve their first contract within 24 h.
+- Median time from install → first comprehended report: ≤ 5 min.
+
+### Feature confidence (new core metrics)
+
+- **Median behaviors per feature**: 4–6 — too few means we're under-claiming; too many means matrix-gen is hallucinating.
+- **Median variants per feature**: 8–15 — proxy for coverage breadth.
+- **Correctness verification rate**: ≥ 90 % of approved contracts produce a green Correctness column on first run across the closed beta. Below that, the contract is too ambitious or the assertions too strict.
+- **Bugs caught per feature per week**: ≥ 1 for active users — the only metric that proves we're earning the "QA engineer" framing.
 
 ### Engagement
 
-- ≥ 40 % of users who save a flow run it again within 7 d.
-- ≥ 25 % of users who save a flow schedule it within 14 d.
+- ≥ 40 % of users who approve a contract trigger a manual re-run within 7 d.
+- ≥ 25 % of users who approve a contract schedule daily runs within 14 d.
 
 ### Retention
 
 - D30 retention: ≥ 30 %.
-- ≥ 10 % of free users convert to Pro within 60 d (regression-diff is the wedge).
+- ≥ 10 % of free users convert to Pro within 60 d (cross-deploy regression + scheduled runs are the wedge).
 
 ### Quality
 
-- Replay reliability (passed when intent succeeded, not flaky): ≥ 85 % across the closed beta.
+- Replay reliability (variant pass when the underlying intent succeeded, not flaky): ≥ 85 % across the closed beta.
 - Auth refresh success rate (user finishes the refresh flow): ≥ 90 %.
+- Re-record rate after contract review: ≤ 20 % (above that, contract synthesis is failing too often).
 
 ### Cost
 
-- Median cost per run: ≤ $0.35.
+- Median cost per feature run: ≤ $0.50.
 - Cumulative BU Cloud spend in beta: ≤ $500.
 
 ---
 
 ## 14. Open questions to resolve before week 1
 
-1. **Pricing** — exact free / Pro / team tier limits and prices.
-2. **Org model** — single workspace per user (simple) vs Clerk Organizations (multi-tenant from day 1).
-3. **Scheduled runs concurrency cap** — global per-org limit and behavior on overflow.
-4. **Public share URL TTL** — perpetual until revoked, or auto-expire after N days?
-5. **Replay video** — render on demand from rrweb (cheap, lazy) or pre-render after every run (faster UX, more storage)?
+1. **Contract editing** — does it land in v2, or do we wait for closed-beta usage data on re-record patterns before designing the editor? Decision affects v2 scope and the "review-only" framing in marketing.
+2. **Adversarial variant aggressiveness** — for sites without an obvious security surface (marketing pages, simple dashboards), how many adversarial variants does matrix-gen generate? Risk: noise / cost. Mitigation candidate: the contract synthesis tags each behavior with a sensitivity prior that matrix-gen consults.
+3. **Variants-per-behavior cap** — the brief assumes 1–2 per applicable mode. Is that the right ceiling for v1, or should Pro tier opt into 3–4 for deeper coverage at higher cost?
+4. **Pricing** — exact free / Pro / team tier limits and prices ($0 / $? / $? per seat per month).
+5. **Org model** — single workspace per user (simple) vs Clerk Organizations (multi-tenant from day 1).
+6. **Scheduled runs concurrency cap** — global per-org limit and behavior on overflow.
+7. **Public share URL TTL** — perpetual until revoked, or auto-expire after N days?
+8. **Replay video** — render on demand from rrweb (cheap, lazy) or pre-render after every run (faster UX, more storage)?
 
 ---
 
