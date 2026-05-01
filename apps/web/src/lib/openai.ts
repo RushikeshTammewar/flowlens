@@ -1,5 +1,5 @@
 /**
- * OpenAI client + phase-1 helper stubs.
+ * LLM client + phase-1 helper stubs.
  *
  * Every helper here has a stable signature and a Zod-validated return type so
  * phase 2 can fill in the bodies without breaking call sites. Phase 1 returns
@@ -12,29 +12,20 @@
  *     (or `client.responses.parse(...)`). It removes JSON-parse failure modes
  *     entirely. Import path: `import { zodResponseFormat } from 'openai/helpers/zod'`.
  *   - Vision: pass image_url content blocks (`{ type: 'image_url', image_url: { url, detail: 'low' } }`).
- *   - Always thread `MODELS.<stage>` from `./models` — never inline a model string.
+ *   - Always thread `MODELS.<stage>` from `@flowlens/llm-config` — never inline a model string.
  *
  * Real implementations land per [LLD §5–§7](/docs/v3/LLD.md).
+ *
+ * Provider routing: `getLlmClient()` from @flowlens/llm-config returns either
+ * a direct OpenAI client or an AzureOpenAI client (when LLM_PROVIDER=azure_foundry),
+ * but the call surface (`client.chat.completions.parse/create`) is identical.
  */
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
 import { z } from 'zod';
-import { MODELS } from '@flowlens/llm-config';
-
-declare global {
-	// eslint-disable-next-line no-var
-	var __flowlensOpenai: OpenAI | undefined;
-}
+import { MODELS, getLlmClient } from '@flowlens/llm-config';
 
 function getClient(): OpenAI {
-	if (!process.env.OPENAI_API_KEY) {
-		throw new Error('OPENAI_API_KEY is required for any LLM call');
-	}
-	if (!globalThis.__flowlensOpenai) {
-		globalThis.__flowlensOpenai = new OpenAI({
-			apiKey: process.env.OPENAI_API_KEY,
-		});
-	}
-	return globalThis.__flowlensOpenai;
+	return getLlmClient();
 }
 
 // ────────────────────────────────────────────────────────────
@@ -216,6 +207,10 @@ export async function suggestSiblingFlows(
 // Health check helper (used by /api/health route)
 // ────────────────────────────────────────────────────────────
 
+/**
+ * @deprecated prefer `hasLlmCredentials()` from `@flowlens/llm-config` which
+ * is provider-aware. Kept for back-compat with /api/health.
+ */
 export function hasOpenAiKey(): boolean {
 	return !!process.env.OPENAI_API_KEY?.trim();
 }

@@ -1,8 +1,8 @@
 """Settings loaded from environment.
 
-Mirrors `apps/web/src/lib/models.ts` for the small subset the worker uses.
-Everything else (Postgres, Vercel Blob, Clerk) is owned by apps/web and the
-worker does not need credentials for those services.
+Mirrors `packages/llm-config/src/index.ts` for the small subset the worker
+uses. Everything else (Postgres, Vercel Blob, Clerk) is owned by apps/web
+and the worker does not need credentials for those services.
 """
 from __future__ import annotations
 
@@ -22,15 +22,34 @@ class Settings(BaseSettings):
     # only window of failure is in-flight requests.
     replay_worker_shared_secret: str = ""
 
-    # OpenAI for the Agent LLM + the T3 judge.
+    # ─── LLM provider routing ────────────────────────────────────────────
+    # `openai` (default) hits api.openai.com. `azure_foundry` routes every
+    # call to Azure AI Foundry (Azure OpenAI deployments). Mirror of
+    # packages/llm-config/src/provider.ts.
+    llm_provider: str = "openai"
+
+    # OpenAI direct (used when llm_provider == 'openai').
     openai_api_key: str = ""
+
+    # Azure AI Foundry (used when llm_provider == 'azure_foundry').
+    # Endpoint format: https://<resource>.services.ai.azure.com/api/projects/<project>
+    # The control-plane suffix `/api/projects/<project>` is stripped before
+    # building inference URLs (see app/llm_client.py).
+    azure_foundry_endpoint: str = ""
+    azure_foundry_api_key: str = ""
+    azure_foundry_subscription_id: str = ""
+    azure_foundry_resource_group: str = ""
+    azure_foundry_project: str = ""
+    azure_foundry_api_version: str = "2024-12-01-preview"
 
     # Browser Use Cloud — browser-use reads this directly when it talks to BU.
     browser_use_api_key: str = ""
 
-    # Mirrors @flowlens/llm-config TS table. Keep names + defaults in sync.
-    flowlens_model_replay_agent: str = "gpt-4.1-mini"
-    flowlens_model_judge: str = "gpt-4.1-mini"
+    # Mirrors @flowlens/llm-config TS table. Kept for backward-compat callers
+    # that still read these directly; the canonical lookup is
+    # `app.llm_client.model_for(stage)` which is provider-aware.
+    flowlens_model_replay_agent: str = ""
+    flowlens_model_judge: str = ""
 
     # Browser-use behaviour knobs (LLD §5.5).
     max_clickable_elements_length: int = 25_000

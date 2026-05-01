@@ -13,6 +13,17 @@ export const blobKeys = {
 	screenshot: (recordingId: string, actionIndex: number) =>
 		`${BUCKET_PREFIX}/${recordingId}/screenshots/${String(actionIndex).padStart(4, '0')}.webp`,
 	actionStream: (recordingId: string) => `${BUCKET_PREFIX}/${recordingId}/actions.ndjson`,
+	// Per-step viewport screenshot captured by the replay worker at run
+	// time. Lives under `runs/<runId>/...` instead of `recordings/...` so
+	// it stays co-located with the run that produced it (a single flow
+	// can be replayed against many variants, each producing distinct
+	// screenshots that don't belong to the original recording bucket).
+	// Bytes are JPEG (quality=60) — the sidecar's CDP captureScreenshot
+	// targets ~80KB per frame so the SSE envelope stays small. The
+	// extension is `.jpeg` so static viewers and the side panel render
+	// the right MIME without sniffing.
+	replayScreenshot: (runId: string, stepIndex: number) =>
+		`runs/${runId}/step-${String(stepIndex).padStart(4, '0')}.jpeg`,
 };
 
 export async function putBlob(

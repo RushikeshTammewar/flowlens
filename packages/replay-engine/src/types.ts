@@ -32,6 +32,11 @@ export const WorkerStepResultSchema = z.object({
 	durationMs: z.number().int().nonnegative(),
 	selectorResolvedVia: WorkerSelectorResolvedViaSchema.nullable().optional(),
 	replayScreenshotBlobKey: z.string().nullable().optional(),
+	// Raw base64 PNG of the post-step viewport. The TS caller decodes
+	// this, uploads to Vercel Blob, and stamps `replayScreenshotBlobKey`
+	// before persisting the row — keeps blob credentials on the web side
+	// so the Python sidecar stays env-var-free.
+	replayScreenshotPngB64: z.string().nullable().optional(),
 	judge: WorkerJudgeVerdictSchema.nullable().optional(),
 	consoleErrors: z.array(z.string()).default([]),
 	networkErrors: z.array(z.unknown()).default([]),

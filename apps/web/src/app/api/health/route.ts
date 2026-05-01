@@ -1,8 +1,13 @@
 import { NextResponse } from 'next/server';
 import { hasOpenAiKey } from '@/lib/openai';
-import { MODELS } from '@flowlens/llm-config';
+import {
+	getLlmClient,
+	getProvider,
+	hasLlmCredentials,
+	modelFor,
+	modelTableSnapshot,
+} from '@flowlens/llm-config';
 import { Pool } from 'pg';
-import OpenAI from 'openai';
 import { Redis } from '@upstash/redis';
 import { sealForOrg, openForOrg, deriveOrgKeyPair } from '@flowlens/cookies-vault';
 import { randomUUID } from 'node:crypto';
@@ -31,6 +36,7 @@ export async function GET(req: Request) {
 
 	const dbUrl = process.env.DATABASE_URL ?? '';
 	const dbUrlUnpooled = process.env.DATABASE_URL_UNPOOLED ?? '';
+	const llmCreds = hasLlmCredentials();
 	const checks: Record<string, unknown> = {
 		ok: true,
 		ts: new Date().toISOString(),
@@ -46,10 +52,13 @@ export async function GET(req: Request) {
 			hasBlobPublicBase: !!process.env.BLOB_PUBLIC_BASE_URL,
 			hasVaultSecret: !!process.env.FLOWLENS_VAULT_SECRET,
 			hasOpenaiKey: hasOpenAiKey(),
+			hasAzureFoundry: llmCreds.hasAzure,
+			llmProvider: llmCreds.provider,
+			llmConfigured: llmCreds.configured,
 			hasDemoMode: process.env.FLOWLENS_DEMO_MODE === 'true',
 			hasDemoBearer: !!process.env.FLOWLENS_DEMO_BEARER,
 		},
-		models: MODELS,
+		models: modelTableSnapshot(),
 	};
 
 	if (!wantProbe) {
@@ -75,22 +84,30 @@ export async function GET(req: Request) {
 		probe.db = { ok: false, error: (err as Error).message };
 	}
 
-	// OpenAI
+	// LLM (provider-aware: hits OpenAI or Azure Foundry depending on
+	// LLM_PROVIDER). Uses the same `MODELS.judge` deployment we'd use for
+	// real judge calls so a successful probe also validates that the active
+	// deployment exists in Foundry Studio.
 	try {
-		const c = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+		const c = getLlmClient();
+		const judgeModel = modelFor('judge');
 		const r = await c.chat.completions.create({
-			model: 'gpt-4.1-mini',
+			model: judgeModel,
 			max_completion_tokens: 5,
 			messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
 		});
-		probe.openai = {
+		probe.llm = {
 			ok: true,
+			provider: getProvider(),
+			model: judgeModel,
 			reply: r.choices[0]?.message.content ?? '',
 			usage: r.usage,
 		};
 	} catch (err) {
-		probe.openai = { ok: false, error: (err as Error).message };
+		probe.llm = { ok: false, provider: getProvider(), error: (err as Error).message };
 	}
+	// Mirror under the legacy key so dashboards keep working.
+	probe.openai = probe.llm;
 
 	// BU Cloud
 	try {
@@ -387,7 +404,12 @@ async function runSmoke(): Promise<NextResponse> {
 	} finally {
 		if (sessionId) {
 			try {
-				await fetch(`${BU_BASE}/sessions/${sessionId}`, {
+				// BU Cloud uses `/browsers/:id` (not `/sessions/:id`) for browser-session
+				// lifecycle. The /sessions/:id PATCH path is for task-sessions only and
+				// returns 404 for browser-session ids — was the cause of stuck-session
+				// leaks during repeated dev smoke runs (each leaks a credit-burning
+				// browser session until the BU Cloud auto-timeout fires).
+				await fetch(`${BU_BASE}/browsers/${sessionId}`, {
 					method: 'PATCH',
 					headers: {
 						'X-Browser-Use-API-Key': process.env.BROWSER_USE_API_KEY ?? '',

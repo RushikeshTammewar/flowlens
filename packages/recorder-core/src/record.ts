@@ -73,6 +73,13 @@ export function startRecorder(opts: StartRecorderOptions): RecorderHandle {
 				...(raw.value !== undefined && !sensitive.isSensitive ? { value: raw.value } : {}),
 				isSensitiveByHeuristic: sensitive.isSensitive,
 				...(raw.rrwebEventId !== undefined ? { rrwebEventId: raw.rrwebEventId } : {}),
+				// Control-context (Fix 1): cheap-to-compute UI shape that
+				// matrix-gen uses to refuse nonsense variants like a unicode
+				// payload on a 3-option radio.
+				...(raw.controlType !== undefined ? { controlType: raw.controlType } : {}),
+				...(raw.availableOptions !== undefined ? { availableOptions: raw.availableOptions } : {}),
+				...(raw.constraints !== undefined ? { constraints: raw.constraints } : {}),
+				...(raw.controlName !== undefined ? { controlName: raw.controlName } : {}),
 			};
 			opts.onSemanticAction(action);
 

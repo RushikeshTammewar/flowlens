@@ -175,8 +175,7 @@ export function Recording() {
 				<p className="text-fl-gray mt-3 flex items-start gap-1.5 text-[10px]">
 					<ShieldCheck size={11} className="mt-px shrink-0 text-fl-green" aria-hidden="true" />
 					<span>
-						Tip — keep the panel closed if it gets in the way. The in-page overlay controls
-						everything.
+						Tip — you can close this panel any time; recording continues in the background.
 					</span>
 				</p>
 			</section>

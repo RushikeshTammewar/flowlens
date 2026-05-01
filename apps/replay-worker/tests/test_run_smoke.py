@@ -118,7 +118,14 @@ def _request_body() -> dict[str, Any]:
         },
         "cdpUrl": "wss://fake.cdp.invalid/devtools/browser/mock",
         "liveUrl": "https://fake.live.invalid/",
-        "mode": {"name": "hybrid"},
+        # Force the legacy Agent path. The default path (simple_replay) talks
+        # raw CDP through `session.get_or_create_cdp_session(...)` which the
+        # in-process `_FakeBrowserSession` stub doesn't implement, and adding
+        # that mock would essentially recreate the entire CDP RPC surface.
+        # `full_llm` exercises the run_agent_step branch which the AsyncMock'd
+        # `browser_use.Agent` covers cleanly and proves the orchestration
+        # layer doesn't trigger a SIGABRT — the original purpose of this test.
+        "mode": {"name": "full_llm"},
         "recordedScreenshotsByIndex": {},
         "sensitiveData": {},
     }

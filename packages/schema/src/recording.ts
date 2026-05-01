@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { HardenedSelectorsSchema } from './flow';
+import {
+	HardenedSelectorsSchema,
+	ControlTypeSchema,
+	ControlConstraintsSchema,
+	PageControlSummarySchema,
+} from './flow';
 
 /**
  * Action types observed during *recording* (DOM events).
@@ -32,6 +37,15 @@ export const RecordedActionSchema = z.object({
 	isSensitiveByHeuristic: z.boolean().default(false),
 	rrwebEventId: z.number().int().nonnegative().optional(),
 	screenshotKey: z.string().optional(),
+	// Control-context (optional, populated only on form-control events).
+	controlType: ControlTypeSchema.optional(),
+	availableOptions: z.array(z.string()).optional(),
+	constraints: ControlConstraintsSchema.optional(),
+	controlName: z.string().optional(),
+	// Set by the compile-pipeline normalizer when it coalesces a burst:
+	// holds the recorder's original action index so resolveScreenshotUrl
+	// can find the blob even after we re-index for display.
+	screenshotLookupIndex: z.number().int().nonnegative().optional(),
 });
 export type RecordedAction = z.infer<typeof RecordedActionSchema>;
 
@@ -60,5 +74,10 @@ export const RecordingFinishPayloadSchema = z.object({
 	actions: z.array(RecordedActionSchema),
 	viewport: ViewportSchema,
 	userAgent: z.string(),
+	// Page-wide control inventory captured at recording stop (Part 2 of
+	// flowlens-25). Optional — extensions running an older bundle won't
+	// include it; the API tolerates absence and matrix-gen falls back to
+	// "only-touched-controls" prompting.
+	pageControls: z.array(PageControlSummarySchema).optional(),
 });
 export type RecordingFinishPayload = z.infer<typeof RecordingFinishPayloadSchema>;

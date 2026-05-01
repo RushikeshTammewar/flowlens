@@ -24,7 +24,10 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from os import environ as os_environ
 from typing import Any, AsyncIterator
+
+os_environ_get = os_environ.get
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
@@ -44,9 +47,16 @@ from .contracts import (
     StepResult,
     StepStartedEvent,
 )
+from .cookie_inject import inject_cookies, navigate_with_cookies
 from .judge import judge_step
 from .resolve import resolve_backend_node_id
 from .security import require_bearer
+from .simple_replay import (
+    SimpleReplayError,
+    capture_screenshot,
+    execute_simple,
+    quick_auth_probe,
+)
 from .telemetry import estimate_cost_usd_micro, log
 
 
@@ -66,6 +76,35 @@ async def post_run(req: RunRequest, request: Request) -> EventSourceResponse:
     return EventSourceResponse(stream(), ping=15)
 
 
+@router.post("/run-sync", dependencies=[Depends(require_bearer)])
+async def post_run_sync(req: RunRequest, request: Request) -> dict[str, Any]:
+    """Synchronous wrapper around the same `_replay` pipeline.
+
+    Buffers every event the generator yields and returns them as a single
+    JSON envelope when the run terminates. Trades streaming progress for
+    transport simplicity — the caller gets ALL step results plus the
+    terminal event in one request/response, which avoids the SSE delivery
+    pitfalls we hit with Node fetch chunk buffering during a 5-parallel
+    matrix run.
+
+    The TS run-batch-inline driver prefers this endpoint; the streaming
+    `/run` is kept for the live extension panel which polls SSE for
+    in-progress visualization (`live_url` etc. still work because BU
+    Cloud's CDP URL is independent of our own event channel).
+    """
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+
+    events: list[dict[str, Any]] = []
+    async for event in _replay(req, request):
+        events.append({
+            "type": event.__class__.__name__,
+            "payload": event.model_dump(),
+        })
+    return {"runId": req.runId, "events": events}
+
+
 async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
     """Drives the replay loop and yields contract events.
 
@@ -77,7 +116,16 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
     """
     from browser_use import BrowserSession  # type: ignore[import-not-found]
 
-    log.info("run_started", runId=req.runId, flowId=req.flow.id, steps=len(req.flow.steps))
+    log.info(
+        "[FLOWLENS:run_started]",
+        runId=req.runId,
+        flowId=req.flow.id,
+        flowName=req.flow.name,
+        siteOrigin=req.flow.siteOrigin,
+        steps=len(req.flow.steps),
+        cookieCount=len(req.cookies),
+        cdpUrlPrefix=req.cdpUrl[:60],
+    )
 
     healthy = True
     overall_status: str = "passed"
@@ -95,20 +143,92 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
         # as a Python exception. We catch it and surface a clean errored
         # run_complete instead of letting the SSE stream tear down.
         session = BrowserSession(cdp_url=req.cdpUrl, keep_alive=True)
-        try:
-            await session.start()
-            session_started = True
-        except Exception as e:
-            log.error("session_start_failed", runId=req.runId, error=str(e))
+        # BU Cloud returns the CDP URL the moment the session row is created,
+        # but the underlying Chromium needs ~3-8s to actually bind the
+        # websocket. Connecting too early surfaces as "All connection
+        # attempts failed". Retry 4x with exponential backoff so the warmup
+        # window doesn't kill our run.
+        attach_delays = [0, 4, 6, 8]
+        last_err: Exception | None = None
+        for attempt, delay in enumerate(attach_delays):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                await session.start()
+                session_started = True
+                log.info(
+                    "[FLOWLENS:bu_session_attached]",
+                    runId=req.runId,
+                    attempt=attempt + 1,
+                )
+                break
+            except Exception as e:
+                last_err = e
+                log.warning(
+                    "[FLOWLENS:bu_session_attach_retry]",
+                    runId=req.runId,
+                    attempt=attempt + 1,
+                    error=str(e)[:200],
+                )
+        if not session_started:
+            log.error(
+                "[FLOWLENS:session_start_failed]",
+                runId=req.runId,
+                error=str(last_err)[:300] if last_err else "unknown",
+            )
             overall_status = "errored"
             error_class = "env"
-            error_summary = f"failed to connect to CDP: {e}"
+            error_summary = f"failed to connect to CDP: {last_err}"
             session = None  # don't try to stop a session that never started
 
         if not session_started:
             # Skip the per-step loop; fall through to the run_complete yield.
             pass
         else:
+            # Step B: inject cookies BEFORE the first navigation, then
+            # navigate to landingUrl regardless of whether cookies were
+            # passed. The navigation is REQUIRED — without it the BU
+            # Cloud session stays on about:blank and step 0 will fail
+            # with "selector did not resolve" because no element on the
+            # recorded page exists yet. (Matrix flows against logged-in
+            # sites worked because they always had cookies, which kept
+            # the bug hidden — single-flow runs against public sites
+            # like practicetestautomation.com surfaced it.)
+            if req.cookies:
+                inject_report = await inject_cookies(session, req.cookies)
+                log.info(
+                    "[FLOWLENS:cookies_injected]",
+                    runId=req.runId,
+                    requested=inject_report["count"],
+                    injected=inject_report["injected"],
+                    errors=len(inject_report["errors"]),
+                )
+            else:
+                log.info(
+                    "[FLOWLENS:cookies_injected]",
+                    runId=req.runId,
+                    requested=0,
+                    injected=0,
+                    errors=0,
+                    note="no cookies in request; skipping injection",
+                )
+
+            landing = req.landingUrl or req.flow.siteOrigin
+            nav_report = await navigate_with_cookies(session, landing)
+            log.info(
+                "[FLOWLENS:landing_after_cookies]",
+                runId=req.runId,
+                requestedUrl=nav_report["requestedUrl"],
+                finalUrl=nav_report["finalUrl"],
+                success=nav_report["success"],
+            )
+            if not nav_report["success"]:
+                log.error(
+                    "[FLOWLENS:landing_failed]",
+                    runId=req.runId,
+                    error=nav_report.get("error"),
+                )
+
             async for ev in _drive_steps(req, request, session, completed_step_results):
                 yield ev
                 if isinstance(ev, RunPausedEvent):
@@ -154,10 +274,11 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
             errorClass=error_class,  # type: ignore[arg-type]
         )
     log.info(
-        "run_finished",
+        "[FLOWLENS:run_finished]",
         runId=req.runId,
         status=overall_status,
-        steps=len(completed_step_results),
+        stepsExecuted=len(completed_step_results),
+        stepsFinishedOk=sum(1 for r in completed_step_results if r.status == "passed"),
         totalCostUsdMicro=sum(r.llmCostUsdMicro for r in completed_step_results),
     )
 
@@ -176,9 +297,17 @@ async def _drive_steps(
     """
     for step in req.flow.steps:
         if await request.is_disconnected():
-            log.warning("client_disconnected", runId=req.runId, stepIndex=step.index)
+            log.warning("[FLOWLENS:client_disconnected]", runId=req.runId, stepIndex=step.index)
             return
 
+        log.info(
+            "[FLOWLENS:step_started]",
+            runId=req.runId,
+            stepIndex=step.index,
+            action=step.action,
+            intent=step.intent[:80],
+            isCritical=step.isCritical,
+        )
         yield StepStartedEvent(runId=req.runId, stepIndex=step.index)
         started = time.monotonic()
         try:
@@ -210,13 +339,23 @@ async def _drive_steps(
         else:
             result.durationMs = int((time.monotonic() - started) * 1000)
         completed_step_results.append(result)
+        log.info(
+            "[FLOWLENS:step_finished]",
+            runId=req.runId,
+            stepIndex=step.index,
+            status=result.status,
+            durationMs=result.durationMs,
+            via=result.selectorResolvedVia,
+            err=(result.errorMessage[:120] if result.errorMessage else None),
+        )
         yield StepFinishedEvent(result=result)
 
         # Auth-wall detection: pause workflow if the replay redirected to login.
+        # Use the simple_replay CDP probe (no browser-use event bus dependency).
         try:
-            is_auth_wall, hint = await detect_auth_wall(session, last_status_code=None)
+            is_auth_wall, hint = await quick_auth_probe(session)
         except Exception as e:
-            log.warning("auth_wall_probe_failed", runId=req.runId, error=str(e))
+            log.warning("[FLOWLENS:auth_wall_probe_failed]", runId=req.runId, error=str(e))
             is_auth_wall, hint = False, None
         if is_auth_wall:
             log.warning("auth_wall_detected", runId=req.runId, stepIndex=step.index, hint=hint)
@@ -239,51 +378,25 @@ async def _drive_steps(
 
 
 async def _execute_step(session: Any, req: RunRequest, step: FlowStep) -> StepResult:
-    """The hybrid CDP-direct vs Agent-loop decision tree."""
+    """Execute one step.
+
+    Default path: `simple_replay.execute_simple` — raw CDP, no Agent loop.
+    This is robust under parallel execution (the Agent loop is not, see
+    `simple_replay.py`'s docstring for the full writeup).
+
+    Mode `full_llm` keeps the Agent path for environments where the
+    Agent's vision-based fallback is required.
+    """
     settings = get_settings()
-    cdp_direct_eligible = (
-        not step.isCritical and req.mode.name != "full_llm" and step.action != "assert"
-    )
-
-    selector_via: str | None = None
-    backend_node_id: int | None = None
-
-    if cdp_direct_eligible:
-        resolved = await resolve_backend_node_id(req.cdpUrl, step.selectors)
-        if getattr(resolved, "found", False):
-            backend_node_id = resolved.backendNodeId  # type: ignore[union-attr]
-            selector_via = resolved.via  # type: ignore[union-attr]
-
-    fallback_to_agent = False
     error_message: str | None = None
+    selector_via: str | None = None
     llm_steps_used = 0
     llm_cost_usd_micro = 0
-    prompt_tokens = 0
-    completion_tokens = 0
 
-    if backend_node_id is not None:
-        try:
-            await execute_cdp_direct(
-                session,
-                step,
-                backend_node_id,
-                value=step.recordedValue if not step.isSensitive else None,
-            )
-        except CdpDirectError as e:
-            log.info(
-                "cdp_direct_fallback",
-                runId=req.runId,
-                stepIndex=step.index,
-                reason=str(e),
-            )
-            fallback_to_agent = True
-
-    if backend_node_id is None or fallback_to_agent or step.isCritical or req.mode.name == "full_llm":
+    if req.mode.name == "full_llm":
+        # Legacy Agent path — used when the caller explicitly asks for it.
         agent_result = await run_agent_step(
-            session,
-            req.flow,
-            step,
-            sensitive_data=req.sensitiveData,
+            session, req.flow, step, sensitive_data=req.sensitiveData
         )
         llm_steps_used = int(agent_result.get("steps_used", 0))
         prompt_tokens = int(agent_result.get("prompt_tokens", 0))
@@ -291,14 +404,48 @@ async def _execute_step(session: Any, req: RunRequest, step: FlowStep) -> StepRe
         llm_cost_usd_micro = estimate_cost_usd_micro(
             settings.flowlens_model_replay_agent, prompt_tokens, completion_tokens
         )
+        selector_via = "llm"
         if not agent_result.get("success", False):
             error_message = str(agent_result.get("error") or "agent step did not complete")
-        if selector_via is None:
-            selector_via = "llm"
+    else:
+        # Default: simple-replay (raw CDP). Deterministic + parallel-safe.
+        try:
+            simple_result = await execute_simple(session, step)
+            selector_via = "css" if step.selectors.css else "xpath" if step.selectors.xpath else "testid"
+            log.info(
+                "[FLOWLENS:simple_step_ok]",
+                runId=req.runId,
+                stepIndex=step.index,
+                action=step.action,
+                via=selector_via,
+                urlAfter=simple_result.get("urlAfter"),
+            )
+        except SimpleReplayError as e:
+            log.warning(
+                "[FLOWLENS:simple_step_failed]",
+                runId=req.runId,
+                stepIndex=step.index,
+                action=step.action,
+                error=str(e),
+            )
+            error_message = str(e)
+            selector_via = "recorded-only"
+
+    # Capture a post-step viewport screenshot regardless of whether the
+    # step itself succeeded — the side panel needs to show "what the page
+    # looked like when this failed" just as much as the success case. The
+    # helper swallows its own errors and returns None on any CDP failure
+    # so a flaky screenshot never turns a passing step into a failure.
+    screenshot_b64 = await capture_screenshot(session)
 
     # T3 judge for critical steps.
+    # Disabled when FLOWLENS_DISABLE_JUDGE is set — we ran into hard RPM=3
+    # caps on gpt-4.1-mini during 5-parallel matrix runs, which blocked
+    # the SSE pipeline. The matrix view doesn't depend on per-step judge
+    # verdicts (the cluster summary at the batch level is what users see).
     judge_verdict: JudgeVerdict | None = None
-    if step.isCritical:
+    judge_disabled = bool(os_environ_get("FLOWLENS_DISABLE_JUDGE", ""))
+    if step.isCritical and not error_message and not judge_disabled:
         try:
             judge_verdict = await judge_step(
                 run_id=req.runId,
@@ -309,7 +456,12 @@ async def _execute_step(session: Any, req: RunRequest, step: FlowStep) -> StepRe
                 replay_screenshot_url=None,  # captured in apps/web after the SSE stream completes
             )
         except Exception as e:
-            log.warning("judge_failed", runId=req.runId, stepIndex=step.index, error=str(e))
+            log.warning(
+                "[FLOWLENS:judge_failed]",
+                runId=req.runId,
+                stepIndex=step.index,
+                error=str(e),
+            )
 
     # Decide step status. Order: explicit error → judge fail → success.
     status: str
@@ -327,7 +479,8 @@ async def _execute_step(session: Any, req: RunRequest, step: FlowStep) -> StepRe
         status=status,  # type: ignore[arg-type]
         durationMs=0,  # filled in by caller
         selectorResolvedVia=selector_via,  # type: ignore[arg-type]
-        replayScreenshotBlobKey=None,  # filled by apps/web from BU Cloud screenshot
+        replayScreenshotBlobKey=None,  # web side stamps this after uploading the b64 below
+        replayScreenshotPngB64=screenshot_b64,
         judge=judge_verdict,
         consoleErrors=[],
         networkErrors=[],

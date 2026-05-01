@@ -67,6 +67,77 @@ export interface StartRecordingResponse {
 	uploadKeyPrefix: string;
 }
 
+/**
+ * Narrowed shape of GET /api/batches/:id used by `MatrixRunning` and
+ * `MatrixReport`. Mirrors the server-side enrichment in
+ * `apps/web/src/app/api/batches/[id]/route.ts` — keep them in sync.
+ */
+export interface BatchStepResult {
+	stepIndex: number;
+	status: 'passed' | 'failed' | 'flaky' | 'blocked_auth' | 'inconclusive' | 'skipped';
+	durationMs: number | null;
+	errorMessage: string | null;
+	replayScreenshotKey: string | null;
+	/** Fully-qualified blob URL when the sidecar uploaded a per-step screenshot. */
+	replayScreenshotUrl: string | null;
+}
+
+export interface BatchVariantRow {
+	variant: {
+		id: string;
+		family: string;
+		name: string;
+		description: string;
+		fragility: string;
+		expectedOutcome: { kind: string; criteria?: string; messageContains?: string[] };
+	};
+	run: {
+		id: string;
+		status: string;
+		liveUrl: string | null;
+		summary: string | null;
+		healthScore: number | null;
+		startedAt: string | null;
+		finishedAt: string | null;
+	} | null;
+	stepResults: BatchStepResult[];
+}
+
+export interface BatchFlowView {
+	id: string;
+	name: string;
+	description: string | null;
+	preconditions: string[];
+	steps: Array<{
+		index: number;
+		action: string;
+		intent: string;
+		expectedOutcome: string;
+		isCritical: boolean;
+	}>;
+}
+
+export interface BatchView {
+	batch: {
+		id: string;
+		status: string;
+		variantIds: string[];
+		startedAt: string | null;
+		finishedAt: string | null;
+		aiClusterSummary: string | null;
+	};
+	flow: BatchFlowView | null;
+	variants: BatchVariantRow[];
+	counts: {
+		total: number;
+		passed: number;
+		failed: number;
+		errored: number;
+		running: number;
+		queued: number;
+	};
+}
+
 async function getToken(): Promise<string | null> {
 	// Demo mode: if the build has a baked-in demo bearer, use it for every
 	// request. The server matches it via FLOWLENS_DEMO_BEARER and returns the
@@ -161,7 +232,22 @@ export const api = {
 		if (!res.ok) throw await toApiError(res, path);
 		return res.json();
 	},
-	async getRun(runId: string): Promise<{ run: { liveUrl: string | null; status: string; summary: string; healthScore: number | null }; stepResults: unknown[] }> {
+	async getRun(runId: string): Promise<{
+		run: {
+			id: string;
+			liveUrl: string | null;
+			status: string;
+			summary: string | null;
+			healthScore: number | null;
+		};
+		stepResults: Array<{
+			stepIndex: number;
+			status: 'passed' | 'failed' | 'flaky' | 'blocked_auth' | 'inconclusive' | 'skipped';
+			durationMs: number | null;
+			errorMessage: string | null;
+		}>;
+		flowSteps: Array<{ index: number; action: string; intent: string; isCritical: boolean }>;
+	}> {
 		const path = `/api/runs/${runId}`;
 		const res = await authedFetch(path);
 		if (!res.ok) throw await toApiError(res, path);
@@ -171,6 +257,47 @@ export const api = {
 		const path = `/api/runs/${runId}/cancel`;
 		const res = await authedFetch(path, { method: 'POST' });
 		if (!res.ok) throw await toApiError(res, path);
+	},
+	async listTestMatrix(flowId: string): Promise<{ variants: Array<{ id: string }> }> {
+		const path = `/api/flows/${flowId}/test-matrix`;
+		const res = await authedFetch(path);
+		if (!res.ok) throw await toApiError(res, path);
+		return (await res.json()) as { variants: Array<{ id: string }> };
+	},
+	async generateTestMatrix(
+		flowId: string,
+		count: 5 | 10 | 20 = 5,
+	): Promise<{ variants: Array<{ id: string }>; model: string }> {
+		const path = `/api/flows/${flowId}/test-matrix`;
+		const res = await authedFetch(path, {
+			method: 'POST',
+			body: JSON.stringify({ count }),
+		});
+		if (!res.ok) throw await toApiError(res, path);
+		return (await res.json()) as { variants: Array<{ id: string }>; model: string };
+	},
+	async startBatchRun(
+		flowId: string,
+		opts: { variantIds?: string[]; parallelism?: number } = {},
+	): Promise<{ batchId: string; variantCount: number; status: string }> {
+		const path = `/api/flows/${flowId}/runs/batch`;
+		const body: Record<string, unknown> = {};
+		if (opts.variantIds && opts.variantIds.length > 0) body.variantIds = opts.variantIds;
+		if (typeof opts.parallelism === 'number') body.parallelism = opts.parallelism;
+		const res = await authedFetch(path, { method: 'POST', body: JSON.stringify(body) });
+		if (!res.ok) throw await toApiError(res, path);
+		return (await res.json()) as { batchId: string; variantCount: number; status: string };
+	},
+	/**
+	 * Polled by `MatrixRunning` (every ~2.5s) and read once by `MatrixReport`.
+	 * Returns the parent flow context, per-variant runs, step results, and
+	 * fully-qualified replay-screenshot URLs.
+	 */
+	async getBatch(batchId: string): Promise<BatchView> {
+		const path = `/api/batches/${batchId}`;
+		const res = await authedFetch(path);
+		if (!res.ok) throw await toApiError(res, path);
+		return (await res.json()) as BatchView;
 	},
 	async refreshCookies(input: {
 		siteOrigin: string;

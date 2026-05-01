@@ -1,12 +1,18 @@
 /**
  * POST /api/flows/:id/runs — start a new run for the given flow.
  *
- * Returns immediately after enqueueing the run; live status streams over
- * `/api/runs/:id/stream` (SSE).
+ * Returns immediately after enqueueing the run; the side panel polls
+ * `/api/runs/:id` for progress (step results land in the DB as the
+ * sidecar streams `step_finished` events).
+ *
+ * Why inline (not Vercel Workflow): the WDK `.well-known/workflow/v1/*`
+ * routes return 404 on this Vercel project even though the functions are
+ * built. Same fallback the matrix runner uses (`runBatchInline`).
  */
 import { NextResponse, type NextRequest } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { waitUntil } from '@vercel/functions';
 import { db } from '@/lib/db';
 import { requireAuthContext, UnauthorizedError } from '@/lib/auth';
 import { flows, runs } from '@flowlens/schema/db';
@@ -16,8 +22,7 @@ import {
 	assertBuCloudCircuit,
 	reserveRunBudget,
 } from '@/lib/budget';
-import { start } from 'workflow/api';
-import { runFlowWorkflow } from '@/workflows/run-flow';
+import { runSingleInline } from '@/lib/run-single-inline';
 
 const StartRunRequestSchema = z.object({
 	mode: z.enum(['hybrid', 'fast', 'full_llm']).default('hybrid'),
@@ -51,17 +56,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 			.returning();
 		if (!run) throw new Error('failed to insert run');
 
-		// Kick off the durable workflow. start() returns a runId; we don't
-		// await completion. Resumption (after auth refresh) is handled by
-		// resumeHook() in /api/cookies/refresh.
-		await start(runFlowWorkflow, [
-			{
+		// Fire-and-forget via waitUntil. Same crash-safety pattern as compile
+		// and matrix-batch. The runner streams `/run` SSE from the sidecar
+		// and writes step_results rows as each step finishes.
+		waitUntil(
+			runSingleInline({
 				runId: run.id,
 				flowId,
 				orgId: auth.org.id,
 				mode: body.mode,
-			},
-		]);
+			}).catch((err) => {
+				console.error('[POST /api/flows/:id/runs] inline dispatch failed:', err);
+			}),
+		);
 
 		return NextResponse.json({ runId: run.id, status: 'queued' });
 	} catch (err) {

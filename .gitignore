@@ -27,3 +27,4 @@ reports/
 .env.test.local
 *.tgz
 .pnpm-store/
+.vercel

@@ -47,14 +47,28 @@ export const BuProxyCountrySchema = z.enum([
 ]);
 export type BuProxyCountry = z.infer<typeof BuProxyCountrySchema>;
 
-export const BuBrowserSessionViewSchema = z.object({
-	id: z.string().uuid(),
-	cdpUrl: z.string().nullable(),
-	liveUrl: z.string().nullable(),
-	status: z.string(),
-	startedAt: z.string().nullable(),
-	stoppedAt: z.string().nullable(),
-});
+// BU Cloud's v2 API was stricter when this client was first written — every
+// browser-session response carried `startedAt`/`stoppedAt`/`cdpUrl`. April 2026
+// the API started omitting fields when their value would be null. Make all of
+// them optional so a session-create response with just `id`+`cdpUrl`+`liveUrl`
+// still parses.
+export const BuBrowserSessionViewSchema = z
+	.object({
+		id: z.string().uuid(),
+		cdpUrl: z.string().nullable().optional(),
+		liveUrl: z.string().nullable().optional(),
+		status: z.string().optional(),
+		startedAt: z.string().nullable().optional(),
+		stoppedAt: z.string().nullable().optional(),
+	})
+	.transform((v) => ({
+		id: v.id,
+		cdpUrl: v.cdpUrl ?? null,
+		liveUrl: v.liveUrl ?? null,
+		status: v.status ?? 'unknown',
+		startedAt: v.startedAt ?? null,
+		stoppedAt: v.stoppedAt ?? null,
+	}));
 export type BuBrowserSessionView = z.infer<typeof BuBrowserSessionViewSchema>;
 
 export const BuCreateBrowserRequestSchema = z.object({
@@ -120,7 +134,7 @@ export class BuCloudClient {
 
 	private async request<T>(
 		path: string,
-		init: RequestInit & { schema?: z.ZodType<T> } = {},
+		init: RequestInit & { schema?: z.ZodTypeAny } = {},
 	): Promise<T> {
 		const ctrl = new AbortController();
 		const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);

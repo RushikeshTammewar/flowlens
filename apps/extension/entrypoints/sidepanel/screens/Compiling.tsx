@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Cpu } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, Cpu, Sparkles } from 'lucide-react';
 import { useAppState } from '../../../lib/state';
 import { api } from '../../../lib/api-client';
 import {
@@ -13,13 +13,22 @@ import {
 	ProgressStages,
 	type ProgressStage,
 	Wordmark,
+	useToast,
 } from '../../../components/ui';
+
+interface FlowPreview {
+	name: string;
+	description: string | null;
+	steps: Array<{ index: number; action: string; intent: string; isCritical: boolean }>;
+}
 
 const STAGE_ORDER: ReadonlyArray<{ id: string; label: string }> = [
 	{ id: 'stitching', label: 'Stitching the recording' },
 	{ id: 'narrating', label: 'Narrating each step' },
 	{ id: 'synthesizing', label: 'Synthesizing the flow' },
 	{ id: 'siblings', label: 'Suggesting related flows' },
+	{ id: 'matrix', label: 'Generating test matrix' },
+	{ id: 'launching', label: 'Launching cloud sessions' },
 ];
 
 const STAGE_ALIASES: Record<string, string> = {
@@ -33,19 +42,125 @@ const STAGE_ALIASES: Record<string, string> = {
 	siblings: 'siblings',
 	suggesting: 'siblings',
 	done: 'siblings',
+	matrix: 'matrix',
+	'matrix-gen': 'matrix',
+	launching: 'launching',
+	'batch-start': 'launching',
 };
+
+// Default size of the auto-generated matrix kicked off after compile-success.
+// 5 keeps OpenAI cost ~$0.03 and the BU Cloud fan-out within parallelism=5,
+// which is what the demo budget assumes.
+const AUTO_MATRIX_COUNT = 5;
+
+type AutoPhase = 'idle' | 'matrix-gen' | 'batch-start' | 'failed';
 
 export function Compiling() {
 	const mode = useAppState((s) => s.mode);
 	const setMode = useAppState((s) => s.setMode);
+	const toast = useToast();
 	const [pct, setPct] = useState(0);
 	const [rawStage, setRawStage] = useState<string>('queued');
 	const [detail, setDetail] = useState<string>('');
+	const [autoPhase, setAutoPhase] = useState<AutoPhase>('idle');
+	// What the AI thinks the user is testing — fetched once compile is done
+	// so the user can verify (and watch) during the matrix-gen wait
+	// (~60-120s on gpt-5.4 reasoning-high). Without this the user just
+	// stares at a frozen progress bar wondering what's happening.
+	const [flowPreview, setFlowPreview] = useState<FlowPreview | null>(null);
+	const [previewOpen, setPreviewOpen] = useState(true);
+	// Guard so the post-compile auto path only fires once per mount, even
+	// though the poller may observe `ready+done` on multiple ticks before
+	// it gets cleared by the cancel ref below.
+	const autoTriggeredRef = useRef(false);
 
 	useEffect(() => {
 		if (mode.kind !== 'compiling') return;
 		let cancelled = false;
+
+		// Auto-run flow: matrix-gen → batch-start → setMode matrix_running.
+		// Lives inside the effect so it inherits the `cancelled` flag and
+		// can be torn down cleanly if the panel unmounts mid-flight (e.g.
+		// the user hits cancel in the footer).
+		const startAutoMatrix = async (flowId: string, userEmail: string) => {
+			autoTriggeredRef.current = true;
+			setAutoPhase('matrix-gen');
+			setRawStage('matrix');
+			setDetail('asking the model for edge-case variants…');
+			setPct(95);
+			// Best-effort: fetch the compiled flow so the user can SEE what
+			// the AI understood while matrix-gen reasoning runs (~60-120s).
+			// Don't block matrix-gen on this — fire and forget.
+			void api
+				.getFlow(flowId)
+				.then((res) => {
+					if (cancelled) return;
+					const f = (res as { flow?: FlowPreview }).flow;
+					if (f && Array.isArray(f.steps)) {
+						setFlowPreview({
+							name: f.name,
+							description: f.description ?? null,
+							steps: f.steps.map((s) => ({
+								index: s.index,
+								action: s.action,
+								intent: s.intent,
+								isCritical: s.isCritical,
+							})),
+						});
+					}
+				})
+				.catch(() => {
+					/* preview is optional UX polish; never fail compile on its account */
+				});
+			try {
+				// Reuse existing variants if the user already generated some
+				// for this flow (e.g. retried compile). Saves an LLM call and
+				// matches the manual `runMatrix` path in Idle.tsx.
+				const list = await api.listTestMatrix(flowId);
+				let variantIds = list.variants.map((v) => v.id);
+				if (variantIds.length === 0) {
+					const gen = await api.generateTestMatrix(flowId, AUTO_MATRIX_COUNT);
+					variantIds = gen.variants.map((v) => v.id);
+				}
+				if (cancelled) return;
+				if (variantIds.length === 0) {
+					throw new Error('matrix generation returned 0 variants');
+				}
+
+				setAutoPhase('batch-start');
+				setRawStage('launching');
+				setDetail(`spinning up ${Math.min(variantIds.length, AUTO_MATRIX_COUNT)} cloud sessions…`);
+				setPct(98);
+				const batch = await api.startBatchRun(flowId, {
+					variantIds: variantIds.slice(0, AUTO_MATRIX_COUNT),
+					parallelism: 5,
+				});
+				if (cancelled) return;
+				setPct(100);
+				setMode({
+					kind: 'matrix_running',
+					userEmail,
+					flowId,
+					batchId: batch.batchId,
+				});
+			} catch (err) {
+				if (cancelled) return;
+				console.warn('[Flowlens] auto matrix-run failed; falling back to Reviewing', err);
+				setAutoPhase('failed');
+				const msg = err instanceof Error ? err.message : 'unknown error';
+				toast.push({
+					tone: 'error',
+					title: 'auto-run failed',
+					body: `${msg} — review the flow and run manually.`,
+				});
+				setMode({ kind: 'reviewing', userEmail, flowId });
+			}
+		};
+
 		const tick = async () => {
+			// Once we've kicked off auto-matrix, stop polling compile-status —
+			// the server view is already at `ready+done` and won't change.
+			if (autoTriggeredRef.current) return;
 			try {
 				const res = await api.getCompileStatus(mode.flowId);
 				if (cancelled) return;
@@ -53,7 +168,7 @@ export function Compiling() {
 				setRawStage(res.compile.stage);
 				setDetail(res.compile.detail ?? '');
 				if (res.flowStatus === 'ready' && res.compile.stage === 'done') {
-					setMode({ kind: 'reviewing', userEmail: mode.userEmail, flowId: mode.flowId });
+					void startAutoMatrix(mode.flowId, mode.userEmail);
 					return;
 				}
 				if (res.compile.stage === 'failed') {
@@ -74,23 +189,38 @@ export function Compiling() {
 			cancelled = true;
 			clearInterval(handle);
 		};
-	}, [mode, setMode]);
+	}, [mode, setMode, toast]);
 
 	if (mode.kind !== 'compiling') return null;
 
 	const activeKey = STAGE_ALIASES[rawStage.toLowerCase()] ?? STAGE_ORDER[0]?.id ?? 'stitching';
 	const activeIdx = STAGE_ORDER.findIndex((s) => s.id === activeKey);
-	const isDone = rawStage === 'done';
+	const isDone = rawStage === 'done' && autoPhase === 'idle';
 	const stages: ProgressStage[] = STAGE_ORDER.map((s, i) => {
 		let state: ProgressStage['state'] = 'pending';
 		if (i < activeIdx) state = 'done';
 		else if (i === activeIdx) state = isDone ? 'done' : 'active';
 		const stage: ProgressStage = { id: s.id, label: s.label, state };
-		if (state === 'active' && i === 1 && detail) stage.detail = detail;
+		if (state === 'active' && detail) stage.detail = detail;
 		return stage;
 	});
 
 	const cancel = () => setMode({ kind: 'idle', userEmail: mode.userEmail });
+
+	const headline =
+		autoPhase === 'matrix-gen'
+			? 'Generating test matrix'
+			: autoPhase === 'batch-start'
+				? 'Launching cloud sessions'
+				: 'Making sense of your recording';
+
+	const subhead =
+		autoPhase === 'matrix-gen' || autoPhase === 'batch-start'
+			? 'Auto-running edge cases — no click required.'
+			: 'AI works in the open — every stage is visible.';
+
+	const pillVariant = autoPhase === 'idle' ? 'warn' : 'success';
+	const pillText = autoPhase === 'idle' ? 'compiling' : 'auto-running';
 
 	return (
 		<PageShell
@@ -99,8 +229,8 @@ export function Compiling() {
 				<PanelHeader>
 					<div className="flex min-w-0 items-center gap-2">
 						<Wordmark />
-						<Pill size="xs" variant="warn" dot>
-							compiling
+						<Pill size="xs" variant={pillVariant} dot>
+							{pillText}
 						</Pill>
 					</div>
 					<span className="text-fl-gray font-mono text-[10px] tabular-nums">{pct}%</span>
@@ -112,11 +242,9 @@ export function Compiling() {
 					<Cpu size={28} aria-hidden="true" />
 				</div>
 				<h1 className="font-serif text-fl-black mt-2 text-[22px] leading-tight tracking-tight">
-					Making sense of your recording
+					{headline}
 				</h1>
-				<p className="text-fl-gray mt-1 text-[11px]">
-					AI works in the open — every stage is visible.
-				</p>
+				<p className="text-fl-gray mt-1 text-[11px]">{subhead}</p>
 			</section>
 
 			<section className="px-3.5">
@@ -132,10 +260,75 @@ export function Compiling() {
 				</Card>
 			</section>
 
+			{(autoPhase === 'matrix-gen' || autoPhase === 'batch-start') && flowPreview && (
+				<section className="px-3.5 pt-3">
+					<Card padding="sm" tone="info">
+						<button
+							type="button"
+							onClick={() => setPreviewOpen((v) => !v)}
+							className="flex w-full items-start justify-between gap-2 text-left"
+							aria-expanded={previewOpen}
+						>
+							<div className="min-w-0">
+								<div className="text-fl-gray font-mono text-[9px] uppercase tracking-wider">
+									What we understood from your recording
+								</div>
+								<div className="text-fl-black mt-0.5 text-[12px] font-semibold leading-tight">
+									{flowPreview.name}
+								</div>
+							</div>
+							{previewOpen ? (
+								<ChevronDown size={14} className="text-fl-gray shrink-0" aria-hidden="true" />
+							) : (
+								<ChevronRight size={14} className="text-fl-gray shrink-0" aria-hidden="true" />
+							)}
+						</button>
+						{previewOpen && (
+							<div className="mt-2 space-y-2">
+								{flowPreview.description && (
+									<p className="text-fl-black text-[11px] leading-relaxed">
+										<Sparkles
+											size={10}
+											className="text-fl-cta mr-1 -mt-0.5 inline-block"
+											aria-hidden="true"
+										/>
+										{flowPreview.description}
+									</p>
+								)}
+								<ol className="space-y-1">
+									{flowPreview.steps.map((s) => (
+										<li
+											key={s.index}
+											className="flex items-baseline gap-1.5 text-[11px] leading-snug"
+										>
+											<span className="text-fl-gray font-mono text-[9px] tabular-nums shrink-0 w-5">
+												{String(s.index + 1).padStart(2, '0')}
+											</span>
+											<span className="text-fl-black flex-1">
+												<span className="text-fl-gray text-[10px] uppercase tracking-wider mr-1">
+													{s.action}
+												</span>
+												{s.intent}
+												{s.isCritical && (
+													<span className="text-fl-cta ml-1 text-[9px] uppercase tracking-wider">
+														·critical
+													</span>
+												)}
+											</span>
+										</li>
+									))}
+								</ol>
+							</div>
+						)}
+					</Card>
+				</section>
+			)}
+
 			<section className="px-3.5 py-3">
 				<p className="text-fl-gray text-[10px]">
-					This usually takes 5–15 seconds. We narrate each step using your screenshots and the
-					DOM context.
+					{autoPhase === 'idle'
+						? 'This usually takes 5–15 seconds. We narrate each step using your screenshots and the DOM context.'
+						: 'Spinning up isolated cloud browsers. You can walk away — results will appear in the next screen.'}
 				</p>
 			</section>
 

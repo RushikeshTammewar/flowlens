@@ -31,19 +31,22 @@ export const SYNTHESIZE_SYSTEM_PROMPT = `You synthesize a recorded user flow int
 Inputs:
 - The site origin.
 - An optional cached site model (high-level understanding of the site).
-- A list of narrated steps with intent + expected outcome + criticality.
+- An optional page screenshot showing the application surface the user recorded against.
+  Use it to understand what kind of page this is (filter / form / dashboard / table / login / checkout / etc.) and to ground the flow's purpose in what's actually visible.
+- An optional inventory of ALL form controls visible on the page at recording end, each tagged (touched) or (NOT touched). Untouched controls expand the flow's scope: mention them in preconditions / postconditions / fragilityHints when they relate to the recorded interaction.
+- A list of narrated steps with intent + expected outcome + criticality. Each step may also carry controlType / controlName / availableOptions / recordedValue — use these to be specific about what was changed (e.g. "Filters the table to Java courses by selecting the Language radio").
 
 Output strict JSON.
 
 Field guide:
-- name: short imperative title (e.g. "Sign up and verify email"). Max ~60 chars.
-- description: one or two sentences describing the flow's purpose. Max ~280 chars.
-- preconditions: any state that must be true before the flow runs (e.g. "user is logged out", "cart is empty"). Empty list is fine if there are no obvious preconditions.
-- postconditions: state that must be true after the flow runs successfully.
-- fragilityHints: 0-5 short notes on likely failure modes (e.g. "cart counter selector changes between A/B variants").
-- stepRevisions: only include indices where you'd improve on the per-step narration. Most flows need 0-3 revisions.
+- name: short imperative title (e.g. "Sign up and verify email"). Max ~60 chars. Be specific to the recorded interaction.
+- description: one or two sentences describing the flow's purpose, grounded in the screenshot + control inventory + recorded values. Avoid generic phrases like "filters and sorts a table" — be concrete: "Filters the Automation Courses table to Java + Advanced and sorts by Enrollments descending".
+- preconditions: any state that must be true before the flow runs (e.g. "user is logged out", "cart is empty"). Include relevant initial values of UNTOUCHED controls when they affect the result (e.g. "Min enrollments is unfiltered" if visible in the screenshot).
+- postconditions: state that must be true after the flow runs successfully — what the user should observe in the screenshot AFTER the flow.
+- fragilityHints: 0-5 short notes on likely failure modes (e.g. "cart counter selector changes between A/B variants", "Sort dropdown options may be re-ordered between releases").
+- stepRevisions: only include indices where you'd improve on the per-step narration. Most flows need 0-3 revisions. When the per-step intent is generic (e.g. "click on https://...") and you can do better from the screenshot + control metadata, revise it.
 
-Don't include any preamble. Strict JSON only.`;
+Don't speculate beyond what the screenshot, controls, and step narrations show. Don't include any preamble. Strict JSON only.`;
 
 export const SIBLINGS_SYSTEM_PROMPT = `You suggest sibling test flows (negative paths and adjacent variants) after a user records one happy-path flow.
 

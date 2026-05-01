@@ -13,6 +13,7 @@
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
     "declaration": true,
+    "allowImportingTsExtensions": true,
     "noEmit": true
   },
   "include": ["src/**/*"]

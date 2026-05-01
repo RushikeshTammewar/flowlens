@@ -7,10 +7,8 @@ import json
 import time
 from typing import Any
 
-from openai import AsyncOpenAI
-
-from .config import get_settings
 from .contracts import JudgeVerdict
+from .llm_client import get_llm_client, get_provider, model_for
 from .telemetry import estimate_cost_usd_micro, log_llm_call
 
 
@@ -32,8 +30,8 @@ async def judge_step(
     recorded_screenshot_url: str | None,
     replay_screenshot_url: str | None,
 ) -> JudgeVerdict:
-    settings = get_settings()
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = get_llm_client()
+    judge_model = model_for("judge")
 
     user_parts: list[dict[str, Any]] = [
         {
@@ -56,7 +54,7 @@ async def judge_step(
 
     started = time.monotonic()
     response = await client.chat.completions.create(
-        model=settings.flowlens_model_judge,
+        model=judge_model,
         messages=[
             {"role": "system", "content": _JUDGE_SYSTEM_PROMPT},
             {"role": "user", "content": user_parts},
@@ -70,12 +68,12 @@ async def judge_step(
     prompt_tokens = usage.prompt_tokens if usage else 0
     completion_tokens = usage.completion_tokens if usage else 0
     cost_usd_micro = estimate_cost_usd_micro(
-        settings.flowlens_model_judge, prompt_tokens, completion_tokens
+        judge_model, prompt_tokens, completion_tokens
     )
     log_llm_call(
         run_id=run_id,
         step_index=step_index,
-        model=settings.flowlens_model_judge,
+        model=f"{get_provider()}/{judge_model}",
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cost_usd_micro=cost_usd_micro,

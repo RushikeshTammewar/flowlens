@@ -39,8 +39,20 @@ interface FlowResp {
 			intent: string;
 			expectedOutcome: string;
 			isCritical: boolean;
+			recordedScreenshotKey?: string;
+			// Server-enriched public blob URL for the per-step screenshot
+			// (built from BLOB_PUBLIC_BASE_URL + recordedScreenshotKey).
+			recordedScreenshotUrl?: string;
 		}>;
 		status: string;
+		// Server-enriched cookie metadata (added by /api/flows/:id when the
+		// flow has a cookie_snapshots row). Optional because legacy flows
+		// recorded before this enrichment landed don't have it.
+		cookieSnapshot?: {
+			cookieCount: number;
+			authDetected: boolean;
+			origin: string | null;
+		} | null;
 	};
 }
 
@@ -203,10 +215,16 @@ export function Reviewing() {
 									}}
 									aria-label={`Step ${i + 1}: ${s.intent}`}
 								>
-									<StepDot
-										index={i}
-										status={i === active ? 'running' : s.isCritical ? 'failed' : 'pending'}
-									/>
+									{/*
+									 * Reviewing is pre-replay — no step has actually passed
+									 * or failed yet. Use 'running' for the actively-viewed
+									 * step and 'pending' for everything else; criticality is
+									 * already conveyed by the per-step `critical` pill on
+									 * each card and by the carousel highlight, so we don't
+									 * need to color critical-but-pending dots red (which
+									 * looks alarming for a flow that hasn't run yet).
+									 */}
+									<StepDot index={i} status={i === active ? 'running' : 'pending'} />
 								</button>
 							))}
 						</div>
@@ -242,10 +260,19 @@ export function Reviewing() {
 											</span>
 										}
 									>
-										<div className="bg-fl-soft border-fl-line aspect-[4/3] w-full border" aria-hidden="true">
-											<div className="flex h-full w-full items-center justify-center text-[10px] text-fl-gray">
-												screenshot
-											</div>
+										<div className="bg-fl-soft border-fl-line aspect-[4/3] w-full overflow-hidden border">
+											{s.recordedScreenshotUrl ? (
+												<img
+													src={s.recordedScreenshotUrl}
+													alt={`Step ${i + 1} screenshot`}
+													loading="lazy"
+													className="h-full w-full object-cover object-top"
+												/>
+											) : (
+												<div className="flex h-full w-full items-center justify-center text-[10px] text-fl-gray">
+													screenshot unavailable
+												</div>
+											)}
 										</div>
 										<dl className="mt-2 space-y-1 text-[11px]">
 											<div>
@@ -273,14 +300,19 @@ export function Reviewing() {
 				</>
 			)}
 
-			<section className="px-3.5 py-3">
-				<div className="border-fl-light bg-fl-soft border px-2.5 py-2 text-[10px]">
-					<div className="text-fl-gray flex items-center gap-1.5">
-						<Lock size={11} className="text-fl-green" aria-hidden="true" />
-						<span>cookies captured · 14 (encrypted) · password redacted</span>
+			{data?.flow.cookieSnapshot ? (
+				<section className="px-3.5 py-3">
+					<div className="border-fl-light bg-fl-soft border px-2.5 py-2 text-[10px]">
+						<div className="text-fl-gray flex items-center gap-1.5">
+							<Lock size={11} className="text-fl-green" aria-hidden="true" />
+							<span>
+								cookies captured · {data.flow.cookieSnapshot.cookieCount} (encrypted)
+								{data.flow.cookieSnapshot.authDetected ? ' · auth detected' : ''}
+							</span>
+						</div>
 					</div>
-				</div>
-			</section>
+				</section>
+			) : null}
 
 			<div className="flex-1" />
 

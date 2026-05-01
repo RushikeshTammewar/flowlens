@@ -32,7 +32,8 @@ console.log(
 	Object.keys(env).filter((k) => k.startsWith('DATABASE_URL') || k === 'POSTGRES_URL').join(', '),
 );
 
-const child = spawn('drizzle-kit', ['push'], {
+// Resolve drizzle-kit via pnpm to handle nested node_modules.
+const child = spawn('/Users/rtammewar/indeed/.pnpm/pnpm', ['exec', 'drizzle-kit', 'push'], {
 	env,
 	stdio: ['pipe', 'inherit', 'inherit'],
 	shell: false,

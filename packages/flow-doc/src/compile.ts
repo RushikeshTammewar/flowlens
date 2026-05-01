@@ -37,6 +37,13 @@ export interface CompileInput {
 	narrateConcurrency?: number;
 	/** When true, skip the sibling-flow LLM call (e.g. on re-compile). */
 	skipSiblings?: boolean;
+	/**
+	 * Page-wide control inventory captured at recording stop. Forwarded to
+	 * synthesize + matrix-gen so the AI knows about controls the user did
+	 * NOT touch (e.g. a min-enrollments filter that was preset before
+	 * recording started).
+	 */
+	pageControls?: import('@flowlens/schema').PageControlSummary[] | null;
 }
 
 export interface CompileOutput {
@@ -45,6 +52,7 @@ export interface CompileOutput {
 	siblings: SiblingFlowsOutput | null;
 	llmTokensUsed: number;
 	llmCostUsdMicroEstimate: number;
+	pageControls: import('@flowlens/schema').PageControlSummary[] | null;
 }
 
 /** Drop low-information actions (scroll-only, duplicate clicks within 250ms, etc.). */
@@ -193,12 +201,50 @@ export async function compileRecording(input: CompileInput): Promise<CompileOutp
 		intent: narration?.intent ?? `${action.type} on ${action.url}`,
 		expectedOutcome: narration?.expectedOutcome ?? 'page state advances',
 		isCritical: narration?.isCritical ?? action.type !== 'scroll',
+		// Forward the richer per-step UI metadata so synthesize can ground
+		// its `description` / `preconditions` / `fragilityHints` in actual
+		// control types and recorded values, not just text intent.
+		...(action.value !== undefined && action.value !== null
+			? { recordedValue: action.value }
+			: {}),
+		...(action.controlType ? { controlType: action.controlType } : {}),
+		...(action.controlName ? { controlName: action.controlName } : {}),
+		...(action.availableOptions && action.availableOptions.length > 0
+			? { availableOptions: action.availableOptions }
+			: {}),
 	}));
+
+	// Pick the same screenshot strategy matrix-gen uses: prefer the FIRST
+	// step that interacted with a form control (shows the page layout with
+	// controls visible). Fall back to first-with-screenshot, then last.
+	let synthesisScreenshotUrl: string | null = null;
+	const firstFormStep = narrations.find(
+		({ action, narration }) =>
+			narration !== null &&
+			action.controlType !== undefined &&
+			action.controlType !== 'unknown',
+	);
+	if (firstFormStep) {
+		synthesisScreenshotUrl = await input.resolveScreenshotUrl({
+			actionIndex: firstFormStep.action.index,
+		});
+	}
+	if (!synthesisScreenshotUrl) {
+		for (const { action } of narrations) {
+			const url = await input.resolveScreenshotUrl({ actionIndex: action.index });
+			if (url) {
+				synthesisScreenshotUrl = url;
+				break;
+			}
+		}
+	}
 
 	const synthesisResult = await synthesizeFlow({
 		siteOrigin: input.siteOrigin,
 		siteModelText: input.siteModelText,
 		narratedSteps: synthesisInput,
+		pageScreenshotUrl: synthesisScreenshotUrl,
+		pageControls: input.pageControls ?? null,
 	});
 	totalTokens += synthesisResult.usage.totalTokens;
 	totalCostUsdMicro += estimateCostUsdMicro(
@@ -265,6 +311,7 @@ export async function compileRecording(input: CompileInput): Promise<CompileOutp
 		siblings,
 		llmTokensUsed: totalTokens,
 		llmCostUsdMicroEstimate: Math.round(totalCostUsdMicro * 1_000_000),
+		pageControls: input.pageControls ?? null,
 	};
 }
 

@@ -1,7 +1,8 @@
 """LLM-driven step execution.
 
 Wraps `browser_use.Agent` with the Flowlens config from LLD §5.5:
-  - ChatOpenAI(model=MODELS.replayAgent, vision='auto', flash_mode=False)
+  - browser-use ChatOpenAI / ChatAzureOpenAI (selected by LLM_PROVIDER) with
+    vision='auto', flash_mode=False
   - tightened max_clickable_elements_length to keep prompts cheap
   - include_attributes covers our four selector tiers + data-flowlens-id
   - max_steps small (3 non-critical, 5 critical)
@@ -16,6 +17,7 @@ from typing import Any, cast
 
 from .config import get_settings
 from .contracts import FlowStep, Flow
+from .llm_client import build_browser_use_llm, model_for
 
 
 def build_agent_task(step: FlowStep, flow: Flow) -> str:
@@ -60,15 +62,14 @@ async def run_agent_step(
     `dom_hash` so the caller can compose a `StepResult`.
     """
     from browser_use import Agent  # type: ignore[import-not-found]
-    from browser_use.llm import ChatOpenAI  # type: ignore[import-not-found]
 
     settings = get_settings()
 
     task = build_agent_task(step, flow)
-    llm = ChatOpenAI(
-        model=settings.flowlens_model_replay_agent,
-        api_key=settings.openai_api_key,
-    )
+    # Provider-aware: returns ChatOpenAI when LLM_PROVIDER=openai, or
+    # ChatAzureOpenAI when LLM_PROVIDER=azure_foundry. `model` is the
+    # deployment name on Azure, the model id on OpenAI.
+    llm = build_browser_use_llm(model=model_for("replayAgent"))
 
     agent = Agent(
         task=task,

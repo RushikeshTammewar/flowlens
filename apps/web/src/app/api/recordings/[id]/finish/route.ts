@@ -74,7 +74,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 		if (!snap) throw new Error('Failed to persist cookie snapshot');
 
 		// Persist the action stream as a single NDJSON blob.
-		const ndjson = body.actions.map((a) => JSON.stringify(a)).join('\n') + '\n';
+		// Page-wide control inventory rides as a sentinel envelope-line at
+		// the head of the blob — this is the cheapest way to plumb it from
+		// the recorder all the way to matrix-gen without touching the DB
+		// schema. compile-inline + the test-matrix route both know to skip
+		// envelope lines while parsing actions, so legacy NDJSON blobs
+		// (recorded before this patch) still parse cleanly.
+		const lines: string[] = [];
+		if (body.pageControls && body.pageControls.length > 0) {
+			lines.push(JSON.stringify({ __envelope: 'pageControls', items: body.pageControls }));
+		}
+		for (const a of body.actions) lines.push(JSON.stringify(a));
+		const ndjson = lines.join('\n') + '\n';
 		const actionStreamKey = blobKeys.actionStream(recordingId);
 		await putBlob(actionStreamKey, ndjson, 'application/x-ndjson');
 

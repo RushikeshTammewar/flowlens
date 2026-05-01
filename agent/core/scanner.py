@@ -2,17 +2,29 @@
 
 Browser-Use manages the browser (Chrome via CDP). The scanner creates
 a NavigationEngine, passes it to QAAgent, and aggregates results.
+
+Auth flow:
+  1. If credentials are provided (sensitive_data), Agent uses browser-use's
+     sensitive_data feature for automated login (LLM never sees real values).
+  2. If automated login fails or no credentials, auth_required event fires.
+  3. If auth_cookie_event is set (backend wired), scanner pauses and waits
+     for the user to complete manual login via RemoteBrowserModal.
+  4. Manual login cookies are injected into the browser session via CDP.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 from datetime import datetime
 
 from agent.core.navigation_engine import NavigationEngine, ProgressCallback
 from agent.core.qa_agent import QAAgent
 from agent.models.graph import SiteGraph
 from agent.models.types import CrawlResult, BugFinding, PageMetrics
+
+logger = logging.getLogger(__name__)
 
 
 VIEWPORTS = {
@@ -35,8 +47,7 @@ class FlowLensScanner:
         storage_state: str | None = None,
         user_data_dir: str | None = None,
         sensitive_data: dict | None = None,
-        # Legacy params (kept for backend compat, ignored)
-        auth_cookie_event: object | None = None,
+        auth_cookie_event: asyncio.Event | None = None,
         auth_cookie_store: dict | None = None,
         scan_id: str | None = None,
     ):
@@ -51,18 +62,22 @@ class FlowLensScanner:
         self._storage_state = storage_state
         self._user_data_dir = user_data_dir
         self._sensitive_data = sensitive_data
+        self._auth_cookie_event = auth_cookie_event
+        self._auth_cookie_store = auth_cookie_store
+        self._scan_id = scan_id
 
     async def scan(self) -> CrawlResult:
         self.result.started_at = datetime.now()
         self._log("debug", f"Starting scan for {self.url}")
 
-        nav = NavigationEngine(
+        self._nav = NavigationEngine(
             on_progress=self._on_progress,
             headless=self._headless,
             storage_state=self._storage_state,
             user_data_dir=self._user_data_dir,
             sensitive_data=self._sensitive_data,
         )
+        nav = self._nav
 
         try:
             await nav.start()
@@ -71,6 +86,12 @@ class FlowLensScanner:
             self._log("scan_error", f"Browser launch failed: {e}")
             return self.result
 
+        def on_progress_with_cookie_bridge(event_type: str, data: dict):
+            if self._on_progress:
+                self._on_progress(event_type, data)
+            if event_type == "auth_required" and self._auth_cookie_event:
+                asyncio.ensure_future(self._wait_for_manual_login(nav))
+
         for viewport_name in self.viewports:
             self._log("debug", f"Testing viewport: {viewport_name}")
 
@@ -78,7 +99,7 @@ class FlowLensScanner:
                 base_url=self.url,
                 max_pages=self.max_pages,
                 nav=nav,
-                on_progress=self._on_progress,
+                on_progress=on_progress_with_cookie_bridge,
                 sensitive_data=self._sensitive_data,
             )
 
@@ -133,6 +154,81 @@ class FlowLensScanner:
         if not self._graph:
             return {"nodes": [], "edges": []}
         return self._graph.to_dict()
+
+    async def _wait_for_manual_login(self, nav: NavigationEngine):
+        """Wait for user to complete login via RemoteBrowserModal, then inject cookies."""
+        if not self._auth_cookie_event:
+            return
+
+        self._log("debug", "Waiting for manual login (up to 120s)...")
+        try:
+            await asyncio.wait_for(self._auth_cookie_event.wait(), timeout=120)
+        except asyncio.TimeoutError:
+            self._log("debug", "Manual login timed out after 120s")
+            return
+
+        cookies = []
+        if self._auth_cookie_store and self._scan_id:
+            cookies = self._auth_cookie_store.get(self._scan_id, [])
+
+        if not cookies:
+            self._log("debug", "No cookies received from manual login")
+            return
+
+        self._log("debug", f"Injecting {len(cookies)} cookies from manual login")
+        await self._inject_cookies(nav, cookies)
+
+    async def _inject_cookies(self, nav: NavigationEngine, cookies: list[dict]):
+        """Inject Playwright-format cookies into the browser-use CDP session."""
+        if not nav._browser:
+            return
+        try:
+            for cookie in cookies:
+                cdp_cookie: dict = {
+                    "name": cookie.get("name", ""),
+                    "value": cookie.get("value", ""),
+                    "domain": cookie.get("domain", ""),
+                    "path": cookie.get("path", "/"),
+                }
+                if cookie.get("expires"):
+                    cdp_cookie["expires"] = cookie["expires"]
+                if cookie.get("httpOnly"):
+                    cdp_cookie["httpOnly"] = True
+                if cookie.get("secure"):
+                    cdp_cookie["secure"] = True
+                if cookie.get("sameSite"):
+                    cdp_cookie["sameSite"] = cookie["sameSite"]
+
+                await nav.execute_javascript(
+                    f"document.cookie = '{cdp_cookie['name']}={cdp_cookie['value']}; "
+                    f"path={cdp_cookie['path']}; "
+                    f"domain={cdp_cookie['domain']}';"
+                )
+
+            cdp = nav._browser.cdp_client
+            if cdp:
+                for cookie in cookies:
+                    params = {
+                        "name": cookie.get("name", ""),
+                        "value": cookie.get("value", ""),
+                        "domain": cookie.get("domain", ""),
+                        "path": cookie.get("path", "/"),
+                    }
+                    if cookie.get("expires"):
+                        params["expires"] = cookie["expires"]
+                    if cookie.get("httpOnly"):
+                        params["httpOnly"] = True
+                    if cookie.get("secure"):
+                        params["secure"] = True
+                    try:
+                        await cdp.send("Network.setCookie", params)
+                    except Exception:
+                        pass
+
+            self._log("debug", "Cookie injection complete, refreshing page...")
+            await nav.navigate_to(self.url)
+        except Exception as e:
+            logger.warning(f"Cookie injection failed: {e}")
 
     def _log(self, event: str, msg: str):
         if self._on_progress:

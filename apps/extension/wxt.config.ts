@@ -2,28 +2,28 @@ import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
 
 /**
- * Strip raw UTF-8 BOM bytes (`EF BB BF`) from any emitted JS/CSS chunk and
- * replace them with the `\ufeff` JS-escape so the equivalent character ends
+ * Strip raw BOM bytes (forward `EF BB BF` = U+FEFF, and reverse `EF BF BE`
+ * = U+FFFE) from any emitted JS/CSS chunk and replace them with the
+ * `\ufeff` / `\ufffe` JS-escapes so the equivalent character still ends
  * up in memory at runtime. Chrome MV3 content scripts reject any raw BOM
- * bytes anywhere in the file (rrweb defensively writes a literal BOM in its
- * BOM-detection helpers, which trips this rule). WXT now uses oxc as its
- * minifier instead of esbuild, so the `esbuild.charset:'ascii'` flag is
- * silently ignored — this plugin is the deterministic fix.
+ * bytes anywhere in the file (rrweb defensively writes BOMs in its
+ * BOM-detection helpers, which trips this rule on both forward AND reverse
+ * BOM constants). WXT now uses oxc as its minifier instead of esbuild, so
+ * the `esbuild.charset:'ascii'` flag is silently ignored — this plugin is
+ * the deterministic fix.
  */
 function stripRawBom() {
+	const sanitize = (s: string) => s.replace(/\uFEFF/g, '\\ufeff').replace(/\uFFFE/g, '\\ufffe');
+	const hasRawBom = (s: string) => s.includes('\uFEFF') || s.includes('\uFFFE');
 	return {
 		name: 'flowlens:strip-raw-bom',
 		generateBundle(_opts: unknown, bundle: Record<string, { type: string; code?: string; source?: string | Uint8Array }>) {
 			for (const fileName of Object.keys(bundle)) {
 				const chunk = bundle[fileName]!;
 				if (chunk.type === 'chunk' && typeof chunk.code === 'string') {
-					if (chunk.code.includes('\uFEFF')) {
-						chunk.code = chunk.code.replace(/\uFEFF/g, '\\ufeff');
-					}
+					if (hasRawBom(chunk.code)) chunk.code = sanitize(chunk.code);
 				} else if (chunk.type === 'asset' && typeof chunk.source === 'string') {
-					if (chunk.source.includes('\uFEFF')) {
-						chunk.source = chunk.source.replace(/\uFEFF/g, '\\ufeff');
-					}
+					if (hasRawBom(chunk.source)) chunk.source = sanitize(chunk.source);
 				}
 			}
 		},
@@ -40,8 +40,14 @@ export default defineConfig({
 		version: '0.0.1',
 		permissions: ['cookies', 'storage', 'scripting', 'activeTab', 'sidePanel', 'tabs', 'notifications'],
 		optional_permissions: ['tabCapture'],
-		host_permissions: [],
-		optional_host_permissions: ['<all_urls>'],
+		// `<all_urls>` is required by `chrome.tabs.captureVisibleTab` for any
+		// page the user navigates to mid-recording. The `activeTab` grant
+		// alone is not sufficient because it lapses on cross-origin (and in
+		// some Chrome builds, even same-origin) navigation, which silently
+		// drops every per-step screenshot — leaving the side panel showing
+		// gray "screenshot" placeholders for compiled flows.
+		host_permissions: ['<all_urls>'],
+		optional_host_permissions: [],
 		side_panel: {
 			default_path: 'sidepanel.html',
 		},

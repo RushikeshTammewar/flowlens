@@ -3,7 +3,6 @@ import { motion } from 'framer-motion';
 import { Pause, Sparkles, Square } from 'lucide-react';
 import { useAppState, type SidePanelStepResult } from '../../../lib/state';
 import { api } from '../../../lib/api-client';
-import { APP_CONFIG } from '../../../app.config';
 import {
 	Button,
 	IconButton,
@@ -17,30 +16,16 @@ import {
 	useToast,
 } from '../../../components/ui';
 
-interface SseStepFinished {
-	type: 'step_finished';
-	result: {
-		stepIndex: number;
-		status: SidePanelStepResult['status'];
-		durationMs: number;
-		errorMessage?: string | null;
-	};
-}
-interface SseStepStarted {
-	type: 'step_started';
-	stepIndex: number;
-}
-interface SseRunPaused {
-	type: 'run_paused';
-	reason: 'auth' | 'user';
-	hint: string;
-}
-interface SseRunComplete {
-	type: 'run_complete';
-	status: string;
-	healthScore: number | null;
-}
-type SseFrame = SseStepStarted | SseStepFinished | SseRunPaused | SseRunComplete;
+const POLL_MS = 1500;
+
+const TERMINAL_STATUSES = new Set([
+	'passed',
+	'failed',
+	'errored',
+	'canceled',
+	'paused_auth',
+	'paused_user',
+]);
 
 const THOUGHT_LOOP: ReadonlyArray<string> = [
 	'finding the target element…',
@@ -52,65 +37,120 @@ const THOUGHT_LOOP: ReadonlyArray<string> = [
 export function Running() {
 	const mode = useAppState((s) => s.mode);
 	const setMode = useAppState((s) => s.setMode);
-	const updateStepResult = useAppState((s) => s.updateStepResult);
 	const toast = useToast();
 	const [err, setErr] = useState('');
 	const [thought, setThought] = useState(0);
 	const [elapsedSec, setElapsedSec] = useState(0);
-	const esRef = useRef<EventSource | null>(null);
 	const startedAt = useState(() => Date.now())[0];
+	const stoppedRef = useRef(false);
 
 	useEffect(() => {
 		if (mode.kind !== 'running') return;
-		void chrome.storage.local.get('flowlens_auth_token').then((res) => {
-			const token = res.flowlens_auth_token as string | undefined;
-			const url = `${APP_CONFIG.apiUrl}/api/runs/${mode.runId}/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-			const es = new EventSource(url);
-			esRef.current = es;
-			es.onmessage = (ev) => {
-				let parsed: SseFrame;
-				try {
-					parsed = JSON.parse(ev.data) as SseFrame;
-				} catch {
+		const runId = mode.runId;
+		stoppedRef.current = false;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+
+		// Poll `/api/runs/:id` at ~1Hz. We replaced the SSE stream because
+		// the EventSource auth path didn't accept the demo bearer (it lives
+		// in `Authorization`, but EventSource can't set headers, and the
+		// stream route doesn't honor `?token=`). Polling is robust to that
+		// and works against any deployment.
+		const tick = async () => {
+			if (stoppedRef.current) return;
+			try {
+				const data = await api.getRun(runId);
+				if (stoppedRef.current) return;
+				setErr('');
+
+				// Defensive guards — the API contract returns both arrays but
+				// older / partial deployments may return undefined; never crash
+				// the side panel because the polling endpoint shape regressed.
+				const safeFlowSteps = Array.isArray(data?.flowSteps) ? data.flowSteps : [];
+				const safeStepResults = Array.isArray(data?.stepResults) ? data.stepResults : [];
+				const intentByIndex = new Map(
+					safeFlowSteps.map((s) => [s.index, s.intent] as const),
+				);
+				const finishedByIndex = new Map(
+					safeStepResults.map((r) => [r.stepIndex, r] as const),
+				);
+
+				// Build the full step list so the user sees pending steps from
+				// the very first poll. The currently-executing step is the
+				// first one without a finished row; everything before it is
+				// finished, everything after is pending.
+				const total = safeFlowSteps.length;
+				const merged: SidePanelStepResult[] = [];
+				let firstUnfinished = total;
+				for (let i = 0; i < total; i++) {
+					const fin = finishedByIndex.get(i);
+					if (fin) {
+						merged.push({
+							stepIndex: i,
+							status: fin.status,
+							intent: intentByIndex.get(i),
+							durationMs: fin.durationMs ?? undefined,
+							errorMessage: fin.errorMessage ?? undefined,
+						});
+					} else {
+						if (i < firstUnfinished) firstUnfinished = i;
+						const isRunning = i === firstUnfinished && data.run.status === 'running';
+						merged.push({
+							stepIndex: i,
+							status: isRunning ? 'in_progress' : 'pending',
+							intent: intentByIndex.get(i),
+						});
+					}
+				}
+
+				const currentStepIndex = Math.min(firstUnfinished, Math.max(0, total - 1));
+
+				const current = useAppState.getState().mode;
+				if (current.kind !== 'running' || current.runId !== runId) return;
+				useAppState.setState({
+					mode: {
+						...current,
+						liveUrl: data.run.liveUrl ?? current.liveUrl,
+						currentStepIndex,
+						stepResults: merged,
+					},
+				});
+
+				if (TERMINAL_STATUSES.has(data.run.status)) {
+					stoppedRef.current = true;
+					if (data.run.status === 'paused_auth') {
+						setMode({
+							kind: 'auth_refresh',
+							userEmail: current.userEmail,
+							runId,
+							siteOrigin: '',
+							hint: data.run.summary ?? 'auth wall detected',
+						});
+					} else {
+						setMode({
+							kind: 'run_report',
+							userEmail: current.userEmail,
+							flowId: current.flowId,
+							runId,
+							status: data.run.status,
+							healthScore: data.run.healthScore,
+							summary: data.run.summary ?? '',
+							stepResults: merged,
+						});
+					}
 					return;
 				}
-				if (parsed.type === 'step_started') {
-					updateStepResult({ stepIndex: parsed.stepIndex, status: 'in_progress' });
-				} else if (parsed.type === 'step_finished') {
-					updateStepResult({
-						stepIndex: parsed.result.stepIndex,
-						status: parsed.result.status,
-						...(parsed.result.durationMs !== undefined ? { durationMs: parsed.result.durationMs } : {}),
-						...(parsed.result.errorMessage ? { errorMessage: parsed.result.errorMessage } : {}),
-					});
-				} else if (parsed.type === 'run_paused' && parsed.reason === 'auth') {
-					setMode({
-						kind: 'auth_refresh',
-						userEmail: mode.userEmail,
-						runId: mode.runId,
-						siteOrigin: '',
-						hint: parsed.hint,
-					});
-				} else if (parsed.type === 'run_complete') {
-					setMode({
-						kind: 'run_report',
-						userEmail: mode.userEmail,
-						flowId: mode.flowId,
-						runId: mode.runId,
-						status: parsed.status,
-						healthScore: parsed.healthScore,
-						summary: '',
-						stepResults: mode.stepResults,
-					});
-					es.close();
-				}
-			};
-			es.onerror = () => {
-				setErr('connection lost — retrying');
-			};
-		});
+			} catch (e) {
+				setErr((e as Error).message);
+			}
+			if (!stoppedRef.current) {
+				timer = setTimeout(tick, POLL_MS);
+			}
+		};
+		void tick();
+
 		return () => {
-			esRef.current?.close();
+			stoppedRef.current = true;
+			if (timer) clearTimeout(timer);
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [mode.kind === 'running' ? mode.runId : null]);
@@ -134,14 +174,17 @@ export function Running() {
 		}
 	};
 
-	const total = Math.max(mode.stepResults.length, mode.currentStepIndex + 1);
+	const total = mode.stepResults.length;
 	const passed = mode.stepResults.filter((r) => r.status === 'passed').length;
 	const failed = mode.stepResults.filter((r) => r.status === 'failed').length;
 
 	const minutes = Math.floor(elapsedSec / 60);
 	const seconds = elapsedSec % 60;
 
-	const currentLabel = `Step ${mode.currentStepIndex + 1}${total ? ` of ${total}` : ''}`;
+	const currentLabel =
+		total > 0
+			? `Step ${Math.min(mode.currentStepIndex + 1, total)} of ${total}`
+			: 'Starting in cloud browser…';
 
 	return (
 		<PageShell
@@ -288,6 +331,7 @@ function statusToStepStatus(s: SidePanelStepResult['status']): StepStatus {
 			return 'inconclusive';
 		case 'skipped':
 			return 'skipped';
+		case 'pending':
 		default:
 			return 'pending';
 	}

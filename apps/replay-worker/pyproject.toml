@@ -17,6 +17,11 @@ dependencies = [
     "structlog>=24.4.0",
     "browser-use>=0.12.1",
     "openai>=1.50.0",
+    # Azure AI Foundry SDK — used for non-OpenAI Foundry models (DeepSeek-R1,
+    # Phi, Llama via Marketplace). For OpenAI-family deployments we use
+    # `openai.AsyncAzureOpenAI` from the openai package above (drop-in API).
+    "azure-ai-inference>=1.0.0b6",
+    "azure-identity>=1.19.0",
 ]
 
 [project.optional-dependencies]

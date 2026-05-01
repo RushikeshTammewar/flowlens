@@ -38,7 +38,7 @@ import type { CompileOutput } from '@flowlens/flow-doc';
 import { compileRecording } from '@flowlens/flow-doc';
 import { syncCookiesToBuProfile } from '@flowlens/cookies-vault';
 import { createBuClient } from '@flowlens/bu-cloud-client';
-import type { RecordedAction } from '@flowlens/schema';
+import type { PageControlSummary, RecordedAction } from '@flowlens/schema';
 import { db } from '@/lib/db';
 import { flows, sites, recordings } from '@flowlens/schema/db';
 import { blobKeys } from '@/lib/blob';
@@ -76,10 +76,37 @@ export async function runCompileInline(
 		const actionsRes = await fetch(actionsUrl);
 		if (!actionsRes.ok) throw new Error(`action stream fetch returned ${actionsRes.status}`);
 		const actionsText = await actionsRes.text();
-		const actions: RecordedAction[] = actionsText
-			.split('\n')
-			.filter(Boolean)
-			.map((line) => JSON.parse(line) as RecordedAction);
+		const actions: RecordedAction[] = [];
+		let pageControls: PageControlSummary[] = [];
+		for (const line of actionsText.split('\n')) {
+			if (!line) continue;
+			// Envelope lines (e.g. {"__envelope":"pageControls","items":[…]})
+			// are sibling metadata, not actions — peel them off before
+			// handing the rest to the compile pipeline. Backwards-compatible
+			// with legacy blobs that have no envelope at all.
+			if (line.includes('"__envelope"')) {
+				try {
+					const parsed = JSON.parse(line) as { __envelope?: string; items?: unknown };
+					if (parsed.__envelope === 'pageControls' && Array.isArray(parsed.items)) {
+						pageControls = parsed.items as PageControlSummary[];
+						continue;
+					}
+				} catch {
+					// fall through and treat as an action so we don't silently drop data
+				}
+			}
+			actions.push(JSON.parse(line) as RecordedAction);
+		}
+
+		// Track which actionIndex blobs actually exist; we'll use this to
+		// stamp `recordedScreenshotKey` on each compiled FlowStep below so
+		// the side panel can render screenshots in the Reviewing screen.
+		const resolvedScreenshotKeys = new Map<number, string>();
+
+		console.info(
+			`[compile-inline] flow=${input.flowId} parsed ${actions.length} actions, ` +
+				`pageControls=${pageControls.length}`,
+		);
 
 		// Run the compile pipeline (narrate × N + synthesize + siblings).
 		const compileResult: CompileOutput = await compileRecording({
@@ -87,6 +114,7 @@ export async function runCompileInline(
 			siteOrigin: site.origin,
 			siteModelText: typeof site.siteModel === 'string' ? site.siteModel : null,
 			actions,
+			pageControls,
 			resolveScreenshotUrl: async ({ actionIndex }) => {
 				// HEAD-probe the blob before handing the URL to OpenAI — the
 				// extension can't always capture a screenshot for every action
@@ -98,7 +126,11 @@ export async function runCompileInline(
 				const url = `${blobBase}/${blobKey}`;
 				try {
 					const probe = await fetch(url, { method: 'HEAD' });
-					return probe.ok ? url : null;
+					if (probe.ok) {
+						resolvedScreenshotKeys.set(actionIndex, blobKey);
+						return url;
+					}
+					return null;
 				} catch {
 					return null;
 				}
@@ -137,11 +169,23 @@ export async function runCompileInline(
 			}
 		}
 
+		// Stamp recordedScreenshotKey on every step that has a blob. The
+		// compile pipeline reads this off `action.screenshotKey`, but the
+		// extension's recorder doesn't populate that field (the chunks
+		// route uploads blobs at deterministic paths but doesn't write
+		// back into the action stream). Filling it here is the single
+		// place where we know both the recordingId and which keys are
+		// actually present in blob storage.
+		const stepsWithScreenshots = compileResult.steps.map((step) => {
+			const key = resolvedScreenshotKeys.get(step.index);
+			return key ? { ...step, recordedScreenshotKey: key } : step;
+		});
+
 		// Commit Flow document + flip status to ready.
 		await db
 			.update(flows)
 			.set({
-				steps: compileResult.steps,
+				steps: stepsWithScreenshots,
 				name: compileResult.synthesis.name || flow.name,
 				description: compileResult.synthesis.description,
 				preconditions: compileResult.synthesis.preconditions,

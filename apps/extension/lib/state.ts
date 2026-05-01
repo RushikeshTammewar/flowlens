@@ -17,11 +17,22 @@ export type AppMode =
 	| { kind: 'running'; userEmail: string; flowId: string; runId: string; liveUrl: string | null; currentStepIndex: number; stepResults: SidePanelStepResult[] }
 	| { kind: 'run_report'; userEmail: string; flowId: string; runId: string; status: string; healthScore: number | null; summary: string; stepResults: SidePanelStepResult[] }
 	| { kind: 'auth_refresh'; userEmail: string; runId: string; siteOrigin: string; hint: string }
-	| { kind: 'failed'; userEmail: string; reason: string };
+	| { kind: 'failed'; userEmail: string; reason: string }
+	// Test-Matrix screens
+	| { kind: 'matrix_running'; userEmail: string; flowId: string; batchId: string }
+	| { kind: 'matrix_report'; userEmail: string; flowId: string; batchId: string };
 
 export interface SidePanelStepResult {
 	stepIndex: number;
-	status: 'passed' | 'failed' | 'flaky' | 'blocked_auth' | 'inconclusive' | 'skipped' | 'in_progress';
+	status:
+		| 'pending'
+		| 'in_progress'
+		| 'passed'
+		| 'failed'
+		| 'flaky'
+		| 'blocked_auth'
+		| 'inconclusive'
+		| 'skipped';
 	intent?: string;
 	durationMs?: number;
 	errorMessage?: string;

@@ -21,3 +21,7 @@ export {
 	type NdjsonChunker,
 	type ChunkEmitted,
 } from './chunker';
+export {
+	extractPageControls,
+	type ExtractPageControlsOptions,
+} from './page-controls';

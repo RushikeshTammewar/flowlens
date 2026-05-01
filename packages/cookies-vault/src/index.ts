@@ -1,9 +1,9 @@
-export { sealForOrg, openForOrg, deriveOrgKeyPair, type SealedPayload } from './encrypt';
-export { syncCookiesToBuProfile, type ProfileSyncInput } from './bu-profile-sync';
+export { sealForOrg, openForOrg, deriveOrgKeyPair, type SealedPayload } from './encrypt.ts';
+export { syncCookiesToBuProfile, type ProfileSyncInput } from './bu-profile-sync.ts';
 export {
 	isCookieSnapshotStale,
 	earliestCookieExpiry,
 	hasAuthCookieHeuristic,
 	type StalenessCheck,
-} from './refresh-detect';
-export { hashAuthDomains, type CookieRecord } from './capture';
+} from './refresh-detect.ts';
+export { hashAuthDomains, type CookieRecord } from './capture.ts';

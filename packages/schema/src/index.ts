@@ -5,3 +5,5 @@ export * from './run';
 export * from './cookie';
 export * from './recording';
 export * from './events';
+export * from './intent';
+export * from './state-snapshot';

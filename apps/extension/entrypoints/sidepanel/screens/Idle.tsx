@@ -1,35 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
-import {
-	ArrowRight,
-	Circle,
-	LogOut,
-	Play,
-	RefreshCcw,
-	Settings as SettingsIcon,
-	Sparkles,
-	UserRound,
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useAppState } from '../../../lib/state';
 import { api } from '../../../lib/api-client';
-import {
-	Button,
-	Card,
-	EmptyState,
-	FlowCardSkeleton,
-	IconButton,
-	PageShell,
-	PanelHeader,
-	Pill,
-	SiteContext,
-	Tabs,
-	type TabItem,
-	Wordmark,
-	useToast,
-	StepDot,
-} from '../../../components/ui';
-import { SettingsAccount } from './SettingsAccount';
-import { SettingsSites } from './SettingsSites';
+import { APP_CONFIG } from '../../../app.config';
 
 interface ActiveTab {
 	tabId: number | null;
@@ -37,32 +9,18 @@ interface ActiveTab {
 	origin: string | null;
 }
 
-interface FlowSummary {
-	id: string;
-	name: string;
-	status: string;
-	updatedAt: string;
-	lastRun?: { status: string; finishedAt: string | null; healthScore: number | null } | null;
-	lastDiagnosis?: string | null;
-}
-
-type IdleTab = 'all' | 'recent' | 'failing' | 'suggested';
-
-type SettingsView = 'account' | 'sites' | null;
+type MatrixSize = 5 | 10 | 20;
 
 export function Idle() {
 	const mode = useAppState((s) => s.mode);
 	const setMode = useAppState((s) => s.setMode);
-	const toast = useToast();
-
 	const [tab, setTab] = useState<ActiveTab>({ tabId: null, url: null, origin: null });
-	const [flows, setFlows] = useState<FlowSummary[]>([]);
-	const [loading, setLoading] = useState(true);
+	const [flows, setFlows] = useState<Array<{ id: string; name: string; status: string; updatedAt: string }>>([]);
 	const [busy, setBusy] = useState(false);
 	const [running, setRunning] = useState<string | null>(null);
+	const [matrixBusy, setMatrixBusy] = useState<string | null>(null);
+	const [pickerFor, setPickerFor] = useState<string | null>(null);
 	const [err, setErr] = useState('');
-	const [active, setActive] = useState<IdleTab>('all');
-	const [settings, setSettings] = useState<SettingsView>(null);
 
 	useEffect(() => {
 		void chrome.tabs.query({ active: true, currentWindow: true }, ([t]) => {
@@ -78,45 +36,22 @@ export function Idle() {
 	}, []);
 
 	useEffect(() => {
+		// Lazy-load the user's flows — best-effort; fails silently if API unavailable.
 		const load = async () => {
-			setLoading(true);
 			try {
+				const { api } = await import('../../../lib/api-client');
 				const res = await api.listFlows({});
-				setFlows((res.flows as FlowSummary[]) ?? []);
+				setFlows(
+					(res.flows as Array<{ id: string; name: string; status: string; updatedAt: string }>) ?? [],
+				);
 			} catch {
-				// no-op — show empty state
-			} finally {
-				setLoading(false);
+				// no-op
 			}
 		};
 		void load();
 	}, []);
 
-	const counts = useMemo(() => {
-		const failing = flows.filter((f) => f.lastRun?.status === 'failed').length;
-		const recent = flows.slice(0, 5).length;
-		return { all: flows.length, recent, failing, suggested: 0 };
-	}, [flows]);
-
-	const filtered = useMemo(() => {
-		if (active === 'failing') return flows.filter((f) => f.lastRun?.status === 'failed');
-		if (active === 'recent') {
-			return [...flows]
-				.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
-				.slice(0, 5);
-		}
-		if (active === 'suggested') return [];
-		return flows;
-	}, [flows, active]);
-
 	if (mode.kind !== 'idle') return null;
-
-	const tabs: ReadonlyArray<TabItem<IdleTab>> = [
-		{ id: 'all', label: 'all', count: counts.all },
-		{ id: 'recent', label: 'recent', count: counts.recent },
-		{ id: 'failing', label: 'failing', count: counts.failing },
-		{ id: 'suggested', label: 'suggested' },
-	];
 
 	const runFlow = async (flowId: string) => {
 		setRunning(flowId);
@@ -133,11 +68,75 @@ export function Idle() {
 				stepResults: [],
 			});
 		} catch (e) {
-			const msg = (e as Error).message;
-			setErr(msg);
-			toast.push({ tone: 'error', title: 'Failed to start run', body: msg });
+			setErr((e as Error).message);
 		} finally {
 			setRunning(null);
+		}
+	};
+
+	const runMatrix = async (flowId: string, count: MatrixSize) => {
+		setMatrixBusy(flowId);
+		setPickerFor(null);
+		setErr('');
+		try {
+			const token = APP_CONFIG.demoBearer
+				? `flowlens-demo-${APP_CONFIG.demoBearer}`
+				: '';
+
+			// Step 1: ensure variants exist (generate if missing or count requested differs).
+			const listRes = await fetch(
+				`${APP_CONFIG.apiUrl}/api/flows/${flowId}/test-matrix`,
+				{ headers: token ? { Authorization: `Bearer ${token}` } : {} },
+			);
+			if (!listRes.ok) throw new Error(`list variants failed: ${listRes.status}`);
+			const listJson = (await listRes.json()) as {
+				variants: Array<{ id: string }>;
+			};
+			let variantIds = listJson.variants.map((v) => v.id);
+			if (variantIds.length === 0) {
+				const genRes = await fetch(
+					`${APP_CONFIG.apiUrl}/api/flows/${flowId}/test-matrix`,
+					{
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							...(token ? { Authorization: `Bearer ${token}` } : {}),
+						},
+						body: JSON.stringify({ count }),
+					},
+				);
+				if (!genRes.ok) throw new Error(`generate variants failed: ${genRes.status}`);
+				const genJson = (await genRes.json()) as {
+					variants: Array<{ id: string }>;
+				};
+				variantIds = genJson.variants.map((v) => v.id);
+			}
+
+			// Step 2: kick off batch.
+			const batchRes = await fetch(
+				`${APP_CONFIG.apiUrl}/api/flows/${flowId}/runs/batch`,
+				{
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						...(token ? { Authorization: `Bearer ${token}` } : {}),
+					},
+					body: JSON.stringify({ variantIds: variantIds.slice(0, count) }),
+				},
+			);
+			if (!batchRes.ok) throw new Error(`start batch failed: ${batchRes.status}`);
+			const batchJson = (await batchRes.json()) as { batchId: string };
+
+			setMode({
+				kind: 'matrix_running',
+				userEmail: mode.userEmail,
+				flowId,
+				batchId: batchJson.batchId,
+			});
+		} catch (e) {
+			setErr((e as Error).message);
+		} finally {
+			setMatrixBusy(null);
 		}
 	};
 
@@ -157,7 +156,6 @@ export function Idle() {
 			if (!res?.ok || !res.recordingId || !res.flowId) {
 				throw new Error(res?.reason ?? 'failed to start');
 			}
-			toast.push({ tone: 'success', title: 'Recording started', body: 'demonstrate the flow.' });
 			setMode({
 				kind: 'recording',
 				userEmail: mode.userEmail,
@@ -167,303 +165,109 @@ export function Idle() {
 				actionsCaptured: 0,
 			});
 		} catch (e) {
-			const msg = (e as Error).message;
-			setErr(msg);
-			toast.push({ tone: 'error', title: 'Could not start', body: msg });
+			setErr((e as Error).message);
 		} finally {
 			setBusy(false);
 		}
 	};
 
-	const signOut = () => {
-		void chrome.storage.local.remove(['flowlens_auth_token', 'flowlens_user_email']);
-		setMode({ kind: 'signed_out' });
-	};
-
-	if (settings === 'account') {
-		return <SettingsAccount onBack={() => setSettings(null)} userEmail={mode.userEmail} />;
-	}
-	if (settings === 'sites') {
-		return <SettingsSites onBack={() => setSettings(null)} />;
-	}
-
-	const hostName = tab.origin ? hostFromOrigin(tab.origin) : null;
-
 	return (
-		<PageShell
-			motionKey="idle"
-			header={
-				<PanelHeader>
-					<div className="flex min-w-0 items-center gap-2">
-						<Wordmark version="3" />
-					</div>
-					<div className="flex items-center gap-1">
-						<IconButton
-							size="sm"
-							label="Settings"
-							icon={<SettingsIcon size={13} aria-hidden="true" />}
-							onClick={() => setSettings('sites')}
-						/>
-						<IconButton
-							size="sm"
-							label="Account"
-							icon={<UserRound size={13} aria-hidden="true" />}
-							onClick={() => setSettings('account')}
-						/>
-						<IconButton
-							size="sm"
-							label="Sign out"
-							icon={<LogOut size={13} aria-hidden="true" />}
-							onClick={signOut}
-						/>
-					</div>
-				</PanelHeader>
-			}
-		>
-			<div className="border-fl-light flex items-center justify-between gap-2 border-b px-3.5 py-1.5">
-				<SiteContext host={hostName} />
-				<Pill size="xs" variant="default" dot>
-					{mode.userEmail.includes('@') ? mode.userEmail : 'signed in'}
-				</Pill>
-			</div>
+		<>
+			<header className="border-fl-light flex items-center justify-between border-b px-4 py-3">
+				<div className="flex items-center gap-2">
+					<span className="font-mono text-sm font-semibold">Flowlens</span>
+					<span className="text-fl-gray text-xs">{tab.origin ? hostFromOrigin(tab.origin) : 'no site'}</span>
+				</div>
+				<button
+					onClick={() => {
+						void chrome.storage.local.remove(['flowlens_auth_token', 'flowlens_user_email']);
+						setMode({ kind: 'signed_out' });
+					}}
+					className="text-fl-gray hover:text-fl-black text-xs"
+				>
+					sign out
+				</button>
+			</header>
 
-			<section className="px-3.5 pb-3 pt-3">
-				<RecordCTA busy={busy} disabled={!tab.origin} onClick={startRecord} hostName={hostName} />
+			<section className="px-4 py-4">
+				<button
+					onClick={startRecord}
+					disabled={busy || !tab.origin}
+					className="bg-fl-cta text-fl-white hover:bg-fl-cta/90 disabled:bg-fl-light disabled:text-fl-gray w-full rounded-none px-4 py-3 text-xs uppercase tracking-wider disabled:cursor-not-allowed"
+				>
+					{busy ? 'starting…' : '● Record a flow'}
+				</button>
 				{!tab.origin && (
-					<p className="text-fl-gray mt-2 text-[10px]">Open a site in this tab first.</p>
+					<p className="text-fl-gray mt-2 text-[11px]">Open a site in this tab first.</p>
 				)}
-				{err && <p className="text-fl-red mt-2 text-[10px]">{err}</p>}
+				{err && <p className="text-fl-red mt-2 text-[11px]">{err}</p>}
 			</section>
 
-			<section className="px-3.5">
-				<Tabs items={tabs} value={active} onChange={setActive} />
-			</section>
-
-			<section className="px-3.5 py-3">
-				{loading ? (
-					<div className="space-y-1.5">
-						<FlowCardSkeleton />
-						<FlowCardSkeleton />
-						<FlowCardSkeleton />
-					</div>
-				) : filtered.length === 0 ? (
-					<EmptyState
-						icon={<Circle size={20} />}
-						title={
-							active === 'failing'
-								? 'no failing flows'
-								: active === 'suggested'
-									? 'no suggestions yet'
-									: 'no flows yet'
-						}
-						body={
-							active === 'failing'
-								? 'all clear — your flows are passing.'
-								: active === 'suggested'
-									? 'record a flow first; we suggest siblings after the first save.'
-									: 'demonstrate a flow above and we handle the rest.'
-						}
-					/>
+			<section className="border-fl-light flex-1 border-t px-4 py-3">
+				<h2 className="text-fl-gray mb-2 text-[11px] uppercase tracking-wider">Flows</h2>
+				{flows.length === 0 ? (
+					<p className="text-fl-gray text-xs">No flows yet. Demonstrate one and we&apos;ll handle the rest.</p>
 				) : (
-					<ul className="space-y-1.5">
-						{filtered.slice(0, 12).map((f) => (
-							<FlowRow
-								key={f.id}
-								flow={f}
-								running={running === f.id}
-								onRun={() => void runFlow(f.id)}
-							/>
+					<ul className="space-y-2">
+						{flows.slice(0, 10).map((f) => (
+							<li key={f.id} className="border-fl-light border-b pb-2 text-xs">
+								<div className="flex items-center gap-2">
+									<span className={statusColor(f.status)}>{statusGlyph(f.status)}</span>
+									<span className="flex-1 truncate">{f.name}</span>
+									<button
+										disabled={f.status !== 'ready' || running === f.id}
+										onClick={() => void runFlow(f.id)}
+										className="bg-fl-black text-fl-white hover:bg-fl-black/90 disabled:bg-fl-light disabled:text-fl-gray rounded-none px-2 py-1 text-[10px] uppercase tracking-wider disabled:cursor-not-allowed"
+									>
+										{running === f.id ? 'starting…' : '▶ run'}
+									</button>
+								</div>
+								{f.status === 'ready' && (
+									<div className="mt-1.5 flex items-center gap-1.5">
+										<button
+											onClick={() => setPickerFor(pickerFor === f.id ? null : f.id)}
+											disabled={matrixBusy === f.id}
+											className="text-fl-cta hover:text-fl-cta/80 text-[10px] underline-offset-2 hover:underline disabled:opacity-50"
+										>
+											{matrixBusy === f.id ? 'starting…' : '✦ Run with edge cases'}
+										</button>
+										{pickerFor === f.id && (
+											<div className="flex items-center gap-1">
+												<span className="text-fl-gray text-[10px]">size:</span>
+												{[5, 10, 20].map((n) => (
+													<button
+														key={n}
+														onClick={() => void runMatrix(f.id, n as MatrixSize)}
+														className="bg-fl-light hover:bg-fl-cta hover:text-fl-white px-1.5 py-0.5 text-[10px]"
+													>
+														{n}
+													</button>
+												))}
+											</div>
+										)}
+									</div>
+								)}
+							</li>
 						))}
 					</ul>
 				)}
 			</section>
-
-			<section className="border-fl-light flex-1 border-t px-3.5 py-3">
-				<header className="mb-1.5 flex items-baseline justify-between">
-					<h3 className="text-fl-gray text-[10px] uppercase tracking-wider">recent runs</h3>
-					<a
-						className="text-fl-gray hover:text-fl-black text-[10px] underline-offset-2 hover:underline"
-						href="#"
-					>
-						view all on web →
-					</a>
-				</header>
-				<RecentRuns flows={flows.slice(0, 4)} />
-			</section>
-
-			<footer className="border-fl-light bg-fl-soft sticky bottom-0 flex items-center justify-between gap-2 border-t px-3.5 py-2">
-				<div className="flex items-center gap-2 text-[10px]">
-					<Pill variant="success" dot size="xs">
-						auth fresh
-					</Pill>
-					<span className="text-fl-gray">expires in 9 d</span>
-				</div>
-				<button
-					type="button"
-					className="text-fl-gray hover:text-fl-black inline-flex items-center gap-1 text-[10px] uppercase tracking-wider"
-				>
-					<RefreshCcw size={10} aria-hidden="true" /> refresh
-				</button>
-			</footer>
-		</PageShell>
+		</>
 	);
 }
 
-function RecordCTA({
-	busy,
-	disabled,
-	onClick,
-	hostName,
-}: {
-	busy: boolean;
-	disabled: boolean;
-	onClick: () => void;
-	hostName: string | null;
-}) {
-	return (
-		<motion.button
-			whileHover={{ y: disabled ? 0 : -1 }}
-			whileTap={{ y: 0 }}
-			transition={{ duration: 0.15 }}
-			onClick={onClick}
-			disabled={disabled || busy}
-			className="group bg-fl-cta relative w-full overflow-hidden border border-fl-cta/40 px-4 py-3 text-left text-fl-white transition-shadow duration-200 ease-out hover:shadow-[0_2px_6px_rgba(15,15,15,0.08),0_12px_24px_rgba(15,15,15,0.10)] disabled:cursor-not-allowed disabled:opacity-60"
-			style={{
-				backgroundImage: 'linear-gradient(180deg, #1f6e37 0%, #174f27 100%)',
-			}}
-		>
-			<span
-				aria-hidden="true"
-				className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent"
-			/>
-			<div className="flex items-center gap-3">
-				<motion.span
-					animate={busy ? { scale: [1, 1.12, 1] } : { scale: 1 }}
-					transition={busy ? { duration: 1.4, repeat: Infinity, ease: 'easeInOut' } : { duration: 0 }}
-					className="relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-fl-red shadow-[inset_0_0_0_2px_rgba(255,255,255,0.18)]"
-				>
-					<span className="block h-2 w-2 rounded-full bg-fl-white" />
-				</motion.span>
-				<div className="min-w-0 flex-1">
-					<div className="font-mono text-[12px] font-semibold uppercase tracking-wider">
-						{busy ? 'starting…' : 'record a flow'}
-					</div>
-					<div className="text-fl-white/70 truncate font-mono text-[10px]">
-						{hostName ? `capture what to test on ${hostName}` : 'open a site in this tab first'}
-					</div>
-				</div>
-				<ArrowRight
-					size={14}
-					className="transition-transform duration-200 group-hover:translate-x-0.5"
-					aria-hidden="true"
-				/>
-			</div>
-		</motion.button>
-	);
+function statusGlyph(s: string): string {
+	if (s === 'ready') return '✓';
+	if (s === 'compiling') return '●';
+	if (s === 'archived') return '×';
+	return '·';
 }
-
-function FlowRow({
-	flow,
-	running,
-	onRun,
-}: {
-	flow: FlowSummary;
-	running: boolean;
-	onRun: () => void;
-}) {
-	const isFailing = flow.lastRun?.status === 'failed';
-	const isPassing = flow.lastRun?.status === 'passed';
-	return (
-		<motion.li
-			layout
-			initial={{ opacity: 0, y: 4 }}
-			animate={{ opacity: 1, y: 0 }}
-			transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-		>
-			<Card
-				interactive
-				padding="sm"
-				className="group"
-				tone={isFailing ? 'danger' : 'neutral'}
-			>
-				<div className="flex items-center gap-2">
-					<StatusGlyph status={flow.lastRun?.status ?? flow.status} />
-					<div className="min-w-0 flex-1">
-						<div className="text-fl-black truncate text-[11px] font-semibold">{flow.name}</div>
-						<div className="text-fl-gray flex items-center gap-1.5 text-[10px]">
-							<span>last run · {timeAgo(flow.lastRun?.finishedAt ?? flow.updatedAt)}</span>
-							{isFailing && <Pill size="xs" variant="danger">failed</Pill>}
-							{isPassing && <Pill size="xs" variant="success">passed</Pill>}
-						</div>
-					</div>
-					<Button
-						size="sm"
-						variant={isFailing ? 'danger' : 'dark'}
-						loading={running}
-						onClick={onRun}
-						leftIcon={!running ? <Play size={10} aria-hidden="true" /> : undefined}
-						disabled={flow.status !== 'ready'}
-					>
-						run
-					</Button>
-				</div>
-				{isFailing && flow.lastDiagnosis && (
-					<div className="text-fl-red mt-1.5 flex items-start gap-1 border-t border-fl-red/20 pt-1.5 text-[10px]">
-						<Sparkles size={10} className="mt-px shrink-0" aria-hidden="true" />
-						<span className="line-clamp-2">{flow.lastDiagnosis}</span>
-					</div>
-				)}
-			</Card>
-		</motion.li>
-	);
+function statusColor(s: string): string {
+	if (s === 'ready') return 'text-fl-green';
+	if (s === 'compiling') return 'text-fl-amber';
+	if (s === 'archived') return 'text-fl-gray';
+	return 'text-fl-gray';
 }
-
-function StatusGlyph({ status }: { status: string }) {
-	if (status === 'passed' || status === 'ready') {
-		return <span className="bg-fl-green inline-block h-2 w-2 rounded-full" aria-hidden="true" />;
-	}
-	if (status === 'failed') {
-		return <span className="bg-fl-red inline-block h-2 w-2 rounded-full" aria-hidden="true" />;
-	}
-	if (status === 'compiling') {
-		return <span className="bg-fl-amber fl-stage-pulse inline-block h-2 w-2 rounded-full" aria-hidden="true" />;
-	}
-	return <span className="bg-fl-line inline-block h-2 w-2 rounded-full" aria-hidden="true" />;
-}
-
-function RecentRuns({ flows }: { flows: FlowSummary[] }) {
-	if (flows.length === 0) {
-		return <p className="text-fl-gray text-[10px]">no recent runs.</p>;
-	}
-	return (
-		<ul className="space-y-1">
-			{flows.map((f, i) => (
-				<li key={f.id} className="flex items-center gap-1.5 text-[10px]">
-					<StepDot
-						status={f.lastRun?.status === 'passed' ? 'passed' : f.lastRun?.status === 'failed' ? 'failed' : 'pending'}
-						index={i}
-					/>
-					<span className="text-fl-black flex-1 truncate">{f.name}</span>
-					<span className="text-fl-gray font-mono">{timeAgo(f.lastRun?.finishedAt ?? f.updatedAt)}</span>
-				</li>
-			))}
-		</ul>
-	);
-}
-
-function timeAgo(iso?: string | null): string {
-	if (!iso) return '—';
-	const ms = Date.now() - new Date(iso).getTime();
-	if (Number.isNaN(ms)) return '—';
-	const m = Math.round(ms / 60000);
-	if (m < 1) return 'just now';
-	if (m < 60) return `${m}m ago`;
-	const h = Math.round(m / 60);
-	if (h < 24) return `${h}h ago`;
-	const d = Math.round(h / 24);
-	return `${d}d ago`;
-}
-
 function hostFromOrigin(origin: string): string {
 	try {
 		return new URL(origin).host;

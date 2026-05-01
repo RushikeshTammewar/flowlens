@@ -31,7 +31,15 @@ VARS=(
   REPLAY_WORKER_URL
 )
 
-ENVS=(production preview development)
+# Preview env vars in Vercel are scoped per-branch in non-interactive mode.
+# We pass an explicit branch (PREVIEW_BRANCH) which must exist on origin.
+# To apply to all preview branches, set the env vars via the dashboard
+# instead — the CLI will not accept "all branches" without a TTY.
+PREVIEW_BRANCH="${PREVIEW_BRANCH:-v3-foundations}"
+
+ENVS=("${ENVS_OVERRIDE:-production preview development}")
+# split into array (bash doesn't handle compound default + array natively)
+IFS=' ' read -r -a ENVS <<< "${ENVS_OVERRIDE:-production preview development}"
 
 OK=0
 SKIP=0
@@ -52,16 +60,18 @@ for VAR in "${VARS[@]}"; do
 
   for ENV in "${ENVS[@]}"; do
     # Best-effort remove; ignore "not found" errors.
-    vercel env rm "$VAR" "$ENV" --yes >/dev/null 2>&1 || true
-    # Use --value (non-interactive) + --yes (skip confirm). The value briefly
-    # appears in argv during this command — acceptable for a one-shot script
-    # on a developer machine; for CI/CD use Vercel's API directly with secrets
-    # in the runner's secret store.
-    if vercel env add "$VAR" "$ENV" --value "$VAL" --yes >/dev/null 2>&1; then
+    if [[ "$ENV" == "preview" ]]; then
+      vercel env rm "$VAR" preview "$PREVIEW_BRANCH" --yes >/dev/null 2>&1 || true
+      addout=$(vercel env add "$VAR" preview "$PREVIEW_BRANCH" --value "$VAL" --yes 2>&1)
+    else
+      vercel env rm "$VAR" "$ENV" --yes >/dev/null 2>&1 || true
+      addout=$(vercel env add "$VAR" "$ENV" --value "$VAL" --yes 2>&1)
+    fi
+    if [[ $? -eq 0 ]]; then
       printf '[%s/%s] OK\n' "$VAR" "$ENV"
       OK=$((OK + 1))
     else
-      printf '[%s/%s] FAIL\n' "$VAR" "$ENV"
+      printf '[%s/%s] FAIL: %s\n' "$VAR" "$ENV" "$(echo "$addout" | tail -3 | head -1)"
       FAIL=$((FAIL + 1))
     fi
   done

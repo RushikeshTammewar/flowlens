@@ -41,10 +41,17 @@ _auth_cookie_events: dict[str, asyncio.Event] = {}
 _auth_cookies: dict[str, list[dict]] = {}
 
 
+class ScanCredentials(BaseModel):
+    email: str = ""
+    password: str = ""
+    extra: dict[str, str] = {}
+
+
 class ScanRequest(BaseModel):
     url: str
     max_pages: int = 10
     viewports: list[str] = ["desktop", "mobile"]
+    credentials: ScanCredentials | None = None
 
 
 class ScanResponse(BaseModel):
@@ -94,6 +101,15 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     max_pages = min(req.max_pages, 50)
     scan_id = str(uuid.uuid4())[:8]
 
+    sensitive_data: dict[str, str] | None = None
+    if req.credentials and (req.credentials.email or req.credentials.password):
+        sensitive_data = {}
+        if req.credentials.email:
+            sensitive_data["email"] = req.credentials.email
+        if req.credentials.password:
+            sensitive_data["password"] = req.credentials.password
+        sensitive_data.update(req.credentials.extra)
+
     scans[scan_id] = {
         "scan_id": scan_id,
         "url": url,
@@ -106,7 +122,7 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     _event_queues[scan_id] = []
     _auth_cookie_events[scan_id] = asyncio.Event()
 
-    background_tasks.add_task(run_scan, scan_id, url, max_pages, req.viewports)
+    background_tasks.add_task(run_scan, scan_id, url, max_pages, req.viewports, sensitive_data)
 
     return ScanResponse(scan_id=scan_id, status="running", url=url)
 
@@ -353,7 +369,7 @@ async def _run_remote_browser(scan_id: str, session: RemoteBrowserSession):
             _remote_browsers.pop(scan_id, None)
 
 
-async def run_scan(scan_id: str, url: str, max_pages: int, viewports: list[str]):
+async def run_scan(scan_id: str, url: str, max_pages: int, viewports: list[str], sensitive_data: dict[str, str] | None = None):
     try:
         def on_progress(event_type: str, data: dict):
             _broadcast_event(scan_id, event_type, data)
@@ -366,6 +382,7 @@ async def run_scan(scan_id: str, url: str, max_pages: int, viewports: list[str])
             max_pages=max_pages,
             viewports=viewports,
             on_progress=on_progress,
+            sensitive_data=sensitive_data,
             auth_cookie_event=_auth_cookie_events.get(scan_id),
             auth_cookie_store=_auth_cookies,
             scan_id=scan_id,

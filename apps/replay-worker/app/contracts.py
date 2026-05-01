@@ -62,6 +62,27 @@ class RunMode(BaseModel):
     name: Literal["hybrid", "fast", "full_llm"] = "hybrid"
 
 
+class CookieParam(BaseModel):
+    """Mirror of @flowlens/schema ChromeCookie. We accept the extension shape
+    verbatim and convert to CDP `Storage.setCookies` params at injection time.
+
+    The `expires` field is the Unix epoch seconds (float) per the Chrome
+    extension API. CDP wants the same — pass through unchanged.
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    name: str
+    value: str
+    domain: str
+    path: str = "/"
+    expires: float | None = None
+    httpOnly: bool = False
+    secure: bool = False
+    # ChromeCookie carries 'unspecified'; CDP rejects that. We sanitize at use.
+    sameSite: Literal["Strict", "Lax", "None", "unspecified"] = "unspecified"
+
+
 class RunRequest(BaseModel):
     """Body of POST /run."""
 
@@ -76,6 +97,14 @@ class RunRequest(BaseModel):
     recordedScreenshotsByIndex: dict[int, str] = Field(default_factory=dict)
     # Sensitive data (decrypted by caller, passed only for the duration of this run).
     sensitiveData: dict[str, str] = Field(default_factory=dict)
+    # Cookies to inject into the BU Cloud session BEFORE the first navigation.
+    # Decrypted by the caller from `cookie_snapshots` and forwarded for the
+    # life of this run only — never persisted on the worker.
+    cookies: list[CookieParam] = Field(default_factory=list)
+    # Optional landing URL — if provided, the worker navigates here AFTER
+    # cookies are set so the very first page-load already carries them.
+    # Defaults to flow.siteOrigin.
+    landingUrl: str | None = None
 
 
 # ─── SSE event payloads ──────────────────────────────────────────────────────
@@ -110,6 +139,11 @@ class StepResult(BaseModel):
     durationMs: int
     selectorResolvedVia: SelectorResolvedVia | None = None
     replayScreenshotBlobKey: str | None = None
+    # Raw base64 PNG of the post-step viewport. The TS caller decodes
+    # this, uploads to Vercel Blob, and stamps `replayScreenshotBlobKey`
+    # before persisting the step row — keeping blob credentials on the
+    # web side so the worker stays env-var-free.
+    replayScreenshotPngB64: str | None = None
     judge: JudgeVerdict | None = None
     consoleErrors: list[str] = Field(default_factory=list)
     networkErrors: list[dict[str, object]] = Field(default_factory=list)
