@@ -10,7 +10,7 @@
  * built. Until that's isolated, run the same fan-out pipeline inline. Trade
  * lose durable resume-on-crash; gain a feature that actually runs.
  */
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import {
 	flows,
@@ -21,12 +21,14 @@ import {
 	cookieSnapshots,
 	sites,
 } from '@flowlens/schema/db';
-import type { FlowStep } from '@flowlens/schema';
+import type { AssertionEval, FlowStep } from '@flowlens/schema';
 import { openForOrg } from '@flowlens/cookies-vault';
 import { createBuClient } from '@flowlens/bu-cloud-client';
 import { emitSseEvent } from '@/lib/sse-bus';
 import { MODELS, getLlmClient, hasLlmCredentials } from '@flowlens/llm-config';
 import { blobKeys, putBlob } from '@/lib/blob';
+import { aggregateBatchVerdict } from '@/lib/aggregate-batch-verdict';
+import { isPhase4Enabled } from '@/lib/feature-flags';
 
 const REPLAY_WORKER_URL = process.env.REPLAY_WORKER_URL ?? 'http://127.0.0.1:8000';
 const REPLAY_WORKER_BEARER = process.env.REPLAY_WORKER_SHARED_SECRET ?? '';
@@ -169,6 +171,29 @@ export async function runBatchInline(input: RunBatchInlineInput): Promise<void> 
 			})
 			.where(eq(runBatches.id, input.batchId));
 
+		// Phase 4 / Tier 3 — two-axis verdict aggregation. Always runs;
+		// V1 batches (no Phase 4 variant.mode) get a degenerate empty
+		// report (zeros), Phase 4 batches get the full per-behavior
+		// rollup persisted to run_batches.behavior_verdicts +
+		// correctness/robustness counts. Defensive try/catch — never
+		// fail batch completion just because aggregation hiccupped.
+		try {
+			if (isPhase4Enabled()) {
+				const agg = await aggregateBatchVerdict({ batchId: input.batchId });
+				console.info(
+					`[phase4:aggregate] batch=${input.batchId} ` +
+						`persisted=${agg.persisted} ` +
+						`correctness=${agg.twoAxisReport.correctness.verified}/${agg.twoAxisReport.correctness.total} ` +
+						`robustness=${agg.twoAxisReport.robustness.verified}/${agg.twoAxisReport.robustness.total}`,
+				);
+			}
+		} catch (err) {
+			console.warn(
+				`[phase4:aggregate] batch=${input.batchId} aggregation failed:`,
+				(err as Error).message,
+			);
+		}
+
 		await emitSseEvent(`batch:${input.batchId}`, {
 			type: 'batch_complete',
 			batchId: input.batchId,
@@ -284,6 +309,19 @@ async function runOneVariant(input: RunOneVariantInput): Promise<{
 			`[FLOWLENS:batch-inline] variant.spawn runId=${run.id} variant=${input.variant.id} family=${input.variant.family} cookies=${input.injectableCookies.length} buSession=${bu.id}`,
 		);
 
+		// Phase 4 / Tier 3 — when this variant carries an assertion +
+		// behaviorId + mode, forward them to the sidecar so the assertion
+		// engine runs after the step loop terminates. Polarity (shouldPass)
+		// is applied later at aggregation time, NOT here. V1 variants (no
+		// `mode` column populated) keep the previous payload shape.
+		const variantPhase4 = (input.variant as typeof input.variant & {
+			mode: 'verify' | 'edge' | 'stress' | 'adversarial' | 'invariant' | null;
+			behaviorId: string | null;
+			assertion: { spec: { kind: string }; fallbackPrompt: string } | null;
+			shouldPass: boolean;
+		});
+		const phase4Active = Boolean(variantPhase4.mode && variantPhase4.assertion);
+
 		// Call /run-sync. The sidecar buffers all events and returns them
 		// as a JSON envelope. This trades streaming progress for delivery
 		// guarantees — fetch chunk buffering ate our SSE run_complete
@@ -318,6 +356,20 @@ async function runOneVariant(input: RunOneVariantInput): Promise<{
 				// `location.href` and is the highest-fidelity value.
 				landingUrl:
 					(variantSteps[0] as { url?: string } | undefined)?.url ?? input.siteOrigin,
+				// Phase 4 / Tier 3 — null/empty when V1 variant.
+				...(phase4Active
+					? {
+							assertion: variantPhase4.assertion,
+							shouldPass: variantPhase4.shouldPass,
+							behaviorId: variantPhase4.behaviorId,
+							phase4Mode: variantPhase4.mode,
+						}
+					: {}),
+				// state (web storage + fingerprint) — wired here as an
+				// empty object until the recorder snapshot pipeline
+				// produces these envelopes (Tier 5 follow-up). Sidecar
+				// no-ops on empty state.
+				state: {},
 			}),
 			signal: AbortSignal.timeout(360_000),
 		});
@@ -335,6 +387,8 @@ async function runOneVariant(input: RunOneVariantInput): Promise<{
 		let runSummary = 'no terminal event from sidecar';
 		let healthScore = 0;
 		let stepFinishedSeen = 0;
+		let lastStepIndex: number | null = null;
+		let phase4AssertionEval: AssertionEval | null = null;
 
 		for (const ev of syncBody.events) {
 			if (ev.type === 'StepFinishedEvent') {
@@ -362,6 +416,7 @@ async function runOneVariant(input: RunOneVariantInput): Promise<{
 				// already on Vercel Blob and the DB shouldn't carry it.
 				stepResult.replayScreenshotPngB64 = null;
 				await persistStepResult(run.id, stepResult);
+				lastStepIndex = stepResult.stepIndex;
 				await emitSseEvent(`batch:${input.batchId}`, {
 					type: 'variant_step',
 					batchId: input.batchId,
@@ -375,6 +430,12 @@ async function runOneVariant(input: RunOneVariantInput): Promise<{
 				runStatus = s === 'passed' ? 'passed' : s === 'failed' ? 'failed' : 'errored';
 				runSummary = (ev.payload.summary as string) ?? '';
 				healthScore = (ev.payload.healthScore as number) ?? 0;
+				// Phase 4 / Tier 3 — sidecar emits assertionEval when the
+				// caller passed an `assertion` payload. Capture it here
+				// and persist below on the LAST step row so the
+				// aggregator can find it via step_results.assertion_eval.
+				const ae = (ev.payload as { assertionEval?: AssertionEval | null }).assertionEval;
+				if (ae) phase4AssertionEval = ae;
 			} else if (ev.type === 'RunPausedEvent') {
 				runStatus = 'errored';
 				runSummary = `paused: ${(ev.payload.hint as string) ?? ''}`;
@@ -383,6 +444,34 @@ async function runOneVariant(input: RunOneVariantInput): Promise<{
 		console.info(
 			`[FLOWLENS:batch-inline] sync_replay_done runId=${run.id} stepsSeen=${stepFinishedSeen} runStatus=${runStatus} healthScore=${healthScore}`,
 		);
+
+		// Phase 4 / Tier 3 — stamp assertionEval onto the last step's
+		// row so the aggregator can find it via step_results.assertion_eval.
+		// Falls back to step 0 when the loop produced no steps (variant
+		// crashed before step 0 — assertion still carries reason).
+		if (phase4AssertionEval) {
+			const targetStepIndex = lastStepIndex ?? 0;
+			await db
+				.update(stepResults)
+				.set({ assertionEval: phase4AssertionEval })
+				.where(
+					and(
+						eq(stepResults.runId, run.id),
+						eq(stepResults.stepIndex, targetStepIndex),
+					),
+				)
+				.catch((err) => {
+					console.warn(
+						`[phase4:assertion] persist failed for run=${run.id}:`,
+						(err as Error).message,
+					);
+				});
+			console.info(
+				`[phase4:assertion] persisted run=${run.id} step=${targetStepIndex} ` +
+					`passed=${phase4AssertionEval.passed} kind=${phase4AssertionEval.evaluatedKind} ` +
+					`llmFallback=${phase4AssertionEval.llmFallbackUsed}`,
+			);
+		}
 
 		await db
 			.update(runs)

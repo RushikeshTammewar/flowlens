@@ -33,10 +33,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from .agent_step import run_agent_step
+from .assertion_engine import evaluate as evaluate_assertion
 from .auth_wall import detect_auth_wall
 from .cdp_direct import CdpDirectError, execute_cdp_direct
 from .config import get_settings
 from .contracts import (
+    AssertionEval,
     Flow,
     FlowStep,
     JudgeVerdict,
@@ -57,6 +59,7 @@ from .simple_replay import (
     execute_simple,
     quick_auth_probe,
 )
+from .state_replicate import apply_fingerprint, apply_web_storage
 from .telemetry import estimate_cost_usd_micro, log
 
 
@@ -136,6 +139,11 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
 
     paused = False  # set True when we yield a RunPausedEvent (no run_complete after)
     session_started = False
+    # Phase 4 / Tier 3 — populated by the assertion engine after the
+    # step loop terminates (when req.assertion is present). None means
+    # "V1 caller / no Phase 4 spec attached" — RunCompleteEvent omits
+    # it and the aggregator falls back to step-status rollup.
+    assertion_eval: AssertionEval | None = None
     try:
         # Step A: connect to the CDP. This is the most failure-prone moment —
         # browser-use does the WebSocket handshake here and any network blip,
@@ -185,6 +193,21 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
             # Skip the per-step loop; fall through to the run_complete yield.
             pass
         else:
+            # Step B-pre: fingerprint emulation (Phase 4 / Tier 3).
+            # Applied BEFORE cookies + navigate so the very first request
+            # carries the overridden UA / Accept-Language headers. Empty
+            # SessionState (legacy / Phase 3 callers) makes this a no-op.
+            fp_report = await apply_fingerprint(
+                session, req.state.fingerprint
+            )
+            if fp_report["applied"] or fp_report["errors"]:
+                log.info(
+                    "[phase4:state] fingerprint",
+                    runId=req.runId,
+                    applied=fp_report["applied"],
+                    errors=len(fp_report["errors"]),
+                )
+
             # Step B: inject cookies BEFORE the first navigation, then
             # navigate to landingUrl regardless of whether cookies were
             # passed. The navigation is REQUIRED — without it the BU
@@ -229,6 +252,20 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
                     error=nav_report.get("error"),
                 )
 
+            # Step B-post: web storage (Phase 4 / Tier 3) — must run
+            # AFTER navigate (Storage APIs need a same-origin document
+            # context). Empty state makes this a no-op for V1 callers.
+            if req.state.localStorage or req.state.sessionStorage:
+                ws_report = await apply_web_storage(
+                    session, req.state, landing
+                )
+                log.info(
+                    "[phase4:state] web_storage",
+                    runId=req.runId,
+                    local=ws_report["localStorage"]["applied"],
+                    sessionItems=ws_report["sessionStorage"]["applied"],
+                )
+
             async for ev in _drive_steps(req, request, session, completed_step_results):
                 yield ev
                 if isinstance(ev, RunPausedEvent):
@@ -237,6 +274,55 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
                     error_class = "auth"
                     healthy = False
                     break
+
+            # Phase 4 / Tier 3 — variant-level assertion evaluation.
+            # Runs once, AFTER all steps have terminated, regardless of
+            # whether they passed individually. This is the single
+            # source of truth for "did the variant achieve its
+            # behavior?" for the two-axis verdict.
+            #
+            # Skipped when the run was paused (auth-wall) — no point
+            # asserting against a login screen.
+            if req.assertion is not None and not paused:
+                last_step_summary = "(no steps executed)"
+                if completed_step_results and req.flow.steps:
+                    last_idx = completed_step_results[-1].stepIndex
+                    if 0 <= last_idx < len(req.flow.steps):
+                        last_step = req.flow.steps[last_idx]
+                        last_step_summary = (
+                            f"{last_step.action} (intent: {last_step.intent[:120]})"
+                        )
+                last_recorded_url = (
+                    req.recordedScreenshotsByIndex.get(
+                        completed_step_results[-1].stepIndex
+                    )
+                    if completed_step_results
+                    else None
+                )
+                assertion_eval = await evaluate_assertion(
+                    session=session,
+                    assertion=req.assertion,
+                    run_id=req.runId,
+                    fallback_recorded_screenshot_url=last_recorded_url,
+                    fallback_replay_screenshot_url=None,  # uploaded post-stream by web side
+                    last_step_action_summary=last_step_summary,
+                )
+                # Phase 4 — variant-level pass/fail derives from the
+                # assertion outcome (with polarity applied by the web
+                # aggregator), NOT from step status. A variant whose
+                # last step "failed" can still be a passing assertion
+                # (e.g. adversarial: input rejected → assertion holds).
+                # Sidecar reports raw assertion_eval; aggregator
+                # decides polarity.
+                if assertion_eval.passed:
+                    overall_status = "passed"
+                    healthy = True
+                else:
+                    overall_status = "failed"
+                    error_class = error_class or "app_bug"
+                    error_summary = (
+                        error_summary or f"assertion failed: {assertion_eval.reason}"
+                    )
     except Exception as e:
         # Belt-and-suspenders: anything else that escapes (e.g. a bug in our
         # own orchestration) becomes a clean errored event.
@@ -250,7 +336,12 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
 
     # Recompute aggregate state in case _drive_steps set healthy/overall_status
     # via mutation through the result list rather than a return value.
-    if not paused and overall_status == "passed":
+    #
+    # Phase 4 / Tier 3 — when an assertion was evaluated, IT is the
+    # source of truth for variant pass/fail (a "failed" recorded step
+    # is the EXPECTED outcome for adversarial variants). Skip the step-
+    # rollup overwrite in that case so the assertion verdict survives.
+    if not paused and overall_status == "passed" and assertion_eval is None:
         # If any non-critical step failed, mark healthy=False but keep status.
         if any(r.status != "passed" for r in completed_step_results):
             healthy = False
@@ -272,6 +363,10 @@ async def _replay(req: RunRequest, request: Request) -> AsyncIterator[Any]:
             summary=error_summary
             or _compute_summary(req.flow, completed_step_results, overall_status),
             errorClass=error_class,  # type: ignore[arg-type]
+            # Phase 4 echoes — None for V1 callers.
+            assertionEval=assertion_eval,
+            behaviorId=req.behaviorId,
+            phase4Mode=req.mode_phase4,
         )
     log.info(
         "[FLOWLENS:run_finished]",
@@ -393,8 +488,19 @@ async def _execute_step(session: Any, req: RunRequest, step: FlowStep) -> StepRe
     llm_steps_used = 0
     llm_cost_usd_micro = 0
 
-    if req.mode.name == "full_llm":
-        # Legacy Agent path — used when the caller explicitly asks for it.
+    # Phase 4 / Tier 3 — structural-divergence dispatch: when the
+    # caller passes a `structuralTask` brief AND we're on the FIRST
+    # step, run the Agent loop with the brief instead of stepwise
+    # replay. The Agent then drives the WHOLE variant via vision +
+    # the recorded steps as context. We still capture per-step
+    # screenshots for the report. Subsequent steps no-op back to
+    # simple_replay so we don't double-execute the same task.
+    use_agent = req.mode.name == "full_llm" or (
+        req.structuralTask is not None and step.index == 0
+    )
+    if use_agent:
+        # Legacy Agent path — used when the caller explicitly asks for it
+        # OR when Phase 4 marks this variant as structural-divergence.
         agent_result = await run_agent_step(
             session, req.flow, step, sensitive_data=req.sensitiveData
         )

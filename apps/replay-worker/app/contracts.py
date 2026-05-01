@@ -3,10 +3,16 @@
 Field names MUST match `packages/replay-engine/src/types.ts` exactly so the
 Pydantic models on this side and the Zod schemas on the TS side can share a
 serialization. We do not use `aliasing` — keep the camelCase names on the wire.
+
+Phase 4 / Tier 3 (LLD §6.4 + §8) adds three optional add-ons on top of the
+existing V1 contract — assertion specs, structured session state, and the
+post-replay AssertionEval. All Phase 4 fields are nullable / default-empty
+so legacy callers (Phase 3 single-runs, the extension's pre-flag matrix
+endpoint) keep working unchanged.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -83,6 +89,125 @@ class CookieParam(BaseModel):
     sameSite: Literal["Strict", "Lax", "None", "unspecified"] = "unspecified"
 
 
+class StorageItem(BaseModel):
+    """One {key, value} entry from a captured Web Storage area.
+
+    Mirrors `Storage.{local,session}Storage` snapshot shape from the
+    extension. Phase 4 / Tier 3 — see `state_replicate.py`.
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    key: str
+    value: str
+
+
+class FingerprintHints(BaseModel):
+    """Browser fingerprint hints injected via CDP `Emulation.*` before the
+    first navigation. Phase 4 / Tier 3 — keeps the cloud browser visually
+    indistinguishable from the recorder's environment for sites that
+    branch on UA / locale / timezone (e.g. localized validation copy).
+
+    All fields optional — only the populated ones get applied.
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    userAgent: str | None = None
+    viewportWidth: int | None = None
+    viewportHeight: int | None = None
+    deviceScaleFactor: float | None = None
+    timezoneId: str | None = None
+    locale: str | None = None
+
+
+class SessionState(BaseModel):
+    """Phase 4 / Tier 3 — the additive session-replication payload that
+    rides alongside `cookies`. Each layer is optional.
+
+    Cookies are carried on `RunRequest.cookies` (V1 — already plumbed).
+    The fields here cover what `state_replicate.py` injects ON TOP of
+    cookies before the first navigation:
+
+      - localStorage / sessionStorage: per-origin {key:value} sets
+        captured by the recorder. Injected via CDP `Runtime.evaluate`
+        right after the landing-URL navigate, scoped by document.
+      - fingerprint: UA / viewport / locale / timezone hints applied
+        via `Emulation.setUserAgentOverride`,
+        `Emulation.setDeviceMetricsOverride`,
+        `Emulation.setLocaleOverride`,
+        `Emulation.setTimezoneOverride`.
+
+    IndexedDB and Service-Worker registrations are deferred (LLD §8.x
+    notes — captured but not yet replayed). Permissions are also
+    deferred.
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    localStorage: dict[str, list[StorageItem]] = Field(default_factory=dict)
+    sessionStorage: dict[str, list[StorageItem]] = Field(default_factory=dict)
+    fingerprint: FingerprintHints | None = None
+
+
+# ─── Phase 4 / Tier 3 — Assertion engine ─────────────────────────────────────
+
+
+AssertionKind = Literal[
+    "url_matches",
+    "dom_text_present",
+    "dom_text_absent",
+    "dom_count",
+    "row_content_match",
+    "console_no_errors",
+    "no_network_5xx",
+    "page_load_no_crash",
+    "screenshot_judge",
+]
+
+
+class AssertionSpec(BaseModel):
+    """Loose-typed mirror of `packages/schema/src/assertion.ts`'s
+    discriminated union. We keep it loose on purpose: the Python side
+    only needs to switch on `kind` and pull payload keys per handler;
+    enforcing the union here would mean keeping two source-of-truth
+    schemas in lockstep across language boundaries for no benefit.
+
+    The TS side validates the Zod schema before sending; we trust the
+    payload here and surface a deterministic-handler-unavailable
+    fallback if a key is missing at evaluation time.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    kind: AssertionKind
+
+
+class Assertion(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    spec: AssertionSpec
+    fallbackPrompt: str
+
+
+class AssertionEval(BaseModel):
+    """Result emitted by `assertion_engine.evaluate()`. Persisted to
+    `step_results.assertion_eval` jsonb on the variant's last step (the
+    aggregator reads from there + `runs.status` to roll up to the
+    two-axis verdict).
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    passed: bool
+    evaluatedKind: AssertionKind
+    reason: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    evaluatedAt: str
+    durationMs: int = 0
+    llmFallbackUsed: bool = False
+
+
 class RunRequest(BaseModel):
     """Body of POST /run."""
 
@@ -105,6 +230,37 @@ class RunRequest(BaseModel):
     # cookies are set so the very first page-load already carries them.
     # Defaults to flow.siteOrigin.
     landingUrl: str | None = None
+    # ── Phase 4 / Tier 3 (all optional, V1 callers omit) ───────────────
+    # The variant-level assertion to evaluate after the step loop ends.
+    # When None, the sidecar falls back to V1 step-level judge behavior.
+    assertion: Assertion | None = None
+    # Whether `assertion.passed=True` means "the variant succeeded as
+    # designed". For adversarial-mode variants the test passes when the
+    # app REJECTS the input — `shouldPass=False` flips the polarity at
+    # run aggregation time. The sidecar reports the raw assertion eval
+    # and lets the web aggregator apply polarity (single source of truth).
+    shouldPass: bool = True
+    # Soft FK to flow.featureContract.expectedBehaviors[].id — echoed
+    # back on RunCompleteEvent so the aggregator doesn't need a second
+    # DB roundtrip per run. None for invariant-mode variants.
+    behaviorId: str | None = None
+    # Variant testing mode — informational; only affects logging and
+    # aggregator polarity. Defaults to verify so legacy callers behave
+    # like Phase 3 happy-path.
+    mode_phase4: Literal["verify", "edge", "stress", "adversarial", "invariant"] | None = (
+        Field(default=None, alias="phase4Mode")
+    )
+    # Optional structural-divergence task description — when present
+    # AND the per-step `simple_replay` cannot satisfy the variant
+    # (because it requires actions outside the recorded steps, e.g.
+    # "click the Reset button"), the sidecar dispatches the
+    # browser_use.Agent loop instead of stepwise replay. Compatible
+    # with the existing `mode: full_llm` path — Phase 4 callers can
+    # skip this field and rely on simple_replay.
+    structuralTask: str | None = None
+    # Phase 4 / Tier 3 — additive session-replication state on top of
+    # cookies. Empty default keeps V1 callers identical to today.
+    state: SessionState = Field(default_factory=SessionState)
 
 
 # ─── SSE event payloads ──────────────────────────────────────────────────────
@@ -172,6 +328,16 @@ class RunCompleteEvent(BaseModel):
     healthScore: int
     summary: str
     errorClass: Literal["app_bug", "flaky", "env", "auth"] | None = None
+    # Phase 4 / Tier 3 — only populated when RunRequest carried an
+    # `assertion`. Aggregator pulls this off the run_complete event and
+    # writes to step_results.assertion_eval (last step) so the web
+    # report can render "passed because: <evidence>" / "failed because:
+    # <reason>". `None` for V1 / Phase 3 callers.
+    assertionEval: AssertionEval | None = None
+    # Echoed from the request so the aggregator doesn't re-query the
+    # variant row. None when the run wasn't carrying a Phase 4 spec.
+    behaviorId: str | None = None
+    phase4Mode: Literal["verify", "edge", "stress", "adversarial", "invariant"] | None = None
 
 
 # ─── /resolve ────────────────────────────────────────────────────────────────
