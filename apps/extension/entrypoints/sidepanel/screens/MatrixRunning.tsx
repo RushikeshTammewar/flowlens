@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { ChevronDown, ChevronRight, Eye, EyeOff } from 'lucide-react';
 import { useAppState } from '../../../lib/state';
-import { api, type BatchView, type BatchVariantRow } from '../../../lib/api-client';
+import {
+	api,
+	type BatchView,
+	type BatchVariantRow,
+	type Phase4Mode,
+} from '../../../lib/api-client';
 import {
 	Card,
 	IconButton,
@@ -11,6 +16,15 @@ import {
 	Pill,
 	Wordmark,
 } from '../../../components/ui';
+
+const MODE_ORDER: Phase4Mode[] = ['verify', 'edge', 'stress', 'adversarial', 'invariant'];
+const MODE_LABEL: Record<Phase4Mode, string> = {
+	verify: 'V',
+	edge: 'E',
+	stress: 'S',
+	adversarial: 'A',
+	invariant: 'I',
+};
 
 const PILL_BY_STATUS: Record<string, 'success' | 'danger' | 'default' | 'warn'> = {
 	passed: 'success',
@@ -62,6 +76,13 @@ export function MatrixRunning() {
 	const variants = data?.variants ?? [];
 	const counts = data?.counts ?? { total: 0, passed: 0, failed: 0, errored: 0, running: 0, queued: 0 };
 	const flow = data?.flow ?? null;
+
+	// Phase 4 / Tier 4 — behavior × mode grid is the primary live progress
+	// surface (UX §6.6). Build it iff at least one variant carries a Phase 4
+	// `mode` column; older V1 variant batches still get the family/fragility
+	// cards below as a fallback.
+	const phase4Active = variants.some((v) => v.variant.mode);
+	const grid = useMemo(() => buildGrid(variants), [variants]);
 
 	return (
 		<PageShell
@@ -160,6 +181,20 @@ export function MatrixRunning() {
 				</section>
 			)}
 
+			{phase4Active && grid.rows.length > 0 && (
+				<section className="px-3.5 pb-3">
+					<Card padding="sm" tone="neutral" title="By behavior">
+						<BehaviorModeGrid rows={grid.rows} modesPresent={grid.modesPresent} />
+						<div className="text-fl-gray mt-2 font-mono text-[9px] uppercase tracking-wider">
+							V verify · E edge · S stress · A adversarial · I invariant
+						</div>
+						<div className="text-fl-gray mt-0.5 font-mono text-[9px]">
+							✓ pass · ✗ fail · • running · ○ queued
+						</div>
+					</Card>
+				</section>
+			)}
+
 			<section className="px-3.5 pb-4 space-y-2">
 				{variants.length === 0 && (
 					<p className="text-fl-gray text-[11px]">Launching variants…</p>
@@ -180,6 +215,126 @@ export function MatrixRunning() {
 			</section>
 		</PageShell>
 	);
+}
+
+// ──────────────────── Phase 4 / Tier 4 — behavior × mode grid ─────────────
+
+interface GridCell {
+	mode: Phase4Mode;
+	status: 'passed' | 'failed' | 'running' | 'queued' | 'errored' | 'inconclusive';
+}
+interface GridRow {
+	behaviorId: string;
+	label: string;
+	cells: Record<Phase4Mode, GridCell[]>;
+}
+
+function buildGrid(variants: BatchVariantRow[]): {
+	rows: GridRow[];
+	modesPresent: Phase4Mode[];
+} {
+	const byBehavior = new Map<string, GridRow>();
+	const modes = new Set<Phase4Mode>();
+	for (const v of variants) {
+		const mode = v.variant.mode;
+		if (!mode) continue;
+		modes.add(mode);
+		const behaviorId = v.variant.behaviorId ?? `invariant-${v.variant.id.slice(0, 8)}`;
+		const label = (() => {
+			if (mode === 'invariant') {
+				return v.variant.name.length > 28 ? v.variant.name.slice(0, 28) + '…' : v.variant.name;
+			}
+			// Pull a short title from the recorded variant name so the
+			// row reads like "B1 Cat narrows" instead of the full GUID.
+			const t = v.variant.name.split(' — ')[0] ?? v.variant.name;
+			return t.length > 28 ? t.slice(0, 28) + '…' : t;
+		})();
+		const row: GridRow = byBehavior.get(behaviorId) ?? {
+			behaviorId,
+			label,
+			cells: { verify: [], edge: [], stress: [], adversarial: [], invariant: [] },
+		};
+		const status: GridCell['status'] = (() => {
+			const s = v.run?.status ?? 'queued';
+			if (s === 'passed' || s === 'failed' || s === 'errored' || s === 'running' || s === 'queued')
+				return s;
+			return 'inconclusive';
+		})();
+		row.cells[mode].push({ mode, status });
+		byBehavior.set(behaviorId, row);
+	}
+	const modesPresent = MODE_ORDER.filter((m) => modes.has(m));
+	return { rows: [...byBehavior.values()], modesPresent };
+}
+
+function BehaviorModeGrid({
+	rows,
+	modesPresent,
+}: {
+	rows: GridRow[];
+	modesPresent: Phase4Mode[];
+}) {
+	return (
+		<div className="overflow-x-auto">
+			<table className="w-full border-separate border-spacing-y-0.5 text-[11px]">
+				<thead>
+					<tr className="text-fl-gray font-mono text-[9px] uppercase tracking-wider">
+						<th className="text-left font-normal pr-2">Behavior</th>
+						{modesPresent.map((m) => (
+							<th key={m} className="text-center font-normal w-7" title={m}>
+								{MODE_LABEL[m]}
+							</th>
+						))}
+					</tr>
+				</thead>
+				<tbody>
+					{rows.map((row) => (
+						<tr key={row.behaviorId}>
+							<td className="text-fl-black truncate max-w-[180px] pr-2">{row.label}</td>
+							{modesPresent.map((m) => {
+								const cells = row.cells[m];
+								return (
+									<td key={m} className="text-center">
+										<CellGroup cells={cells} />
+									</td>
+								);
+							})}
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
+	);
+}
+
+function CellGroup({ cells }: { cells: GridCell[] }) {
+	if (cells.length === 0) {
+		return <span className="text-fl-gray">·</span>;
+	}
+	return (
+		<span className="inline-flex items-center justify-center gap-0.5">
+			{cells.map((c, i) => (
+				<CellMark key={i} status={c.status} />
+			))}
+		</span>
+	);
+}
+
+function CellMark({ status }: { status: GridCell['status'] }) {
+	switch (status) {
+		case 'passed':
+			return <span className="text-fl-green inline-block w-3 text-center">✓</span>;
+		case 'failed':
+		case 'errored':
+		case 'inconclusive':
+			return <span className="text-fl-red inline-block w-3 text-center">✗</span>;
+		case 'running':
+			return (
+				<span className="text-fl-amber inline-block h-2 w-2 rounded-full bg-current fl-stage-pulse" />
+			);
+		case 'queued':
+			return <span className="text-fl-gray inline-block w-3 text-center">○</span>;
+	}
 }
 
 interface VariantCardProps {

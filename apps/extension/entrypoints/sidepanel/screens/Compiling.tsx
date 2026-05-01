@@ -82,36 +82,52 @@ export function Compiling() {
 		// Lives inside the effect so it inherits the `cancelled` flag and
 		// can be torn down cleanly if the panel unmounts mid-flight (e.g.
 		// the user hits cancel in the footer).
+		//
+		// Phase 4 / Tier 4 — when the compiled flow has a featureContract,
+		// we land on `contract_review` instead of auto-running matrix-gen.
+		// The user approves the contract, then ContractReview kicks off
+		// matrix-gen + batch-start. This is the UX §6.5 surface.
 		const startAutoMatrix = async (flowId: string, userEmail: string) => {
 			autoTriggeredRef.current = true;
 			setAutoPhase('matrix-gen');
 			setRawStage('matrix');
 			setDetail('asking the model for edge-case variants…');
 			setPct(95);
-			// Best-effort: fetch the compiled flow so the user can SEE what
-			// the AI understood while matrix-gen reasoning runs (~60-120s).
-			// Don't block matrix-gen on this — fire and forget.
-			void api
-				.getFlow(flowId)
-				.then((res) => {
-					if (cancelled) return;
-					const f = (res as { flow?: FlowPreview }).flow;
-					if (f && Array.isArray(f.steps)) {
-						setFlowPreview({
-							name: f.name,
-							description: f.description ?? null,
-							steps: f.steps.map((s) => ({
-								index: s.index,
-								action: s.action,
-								intent: s.intent,
-								isCritical: s.isCritical,
-							})),
-						});
-					}
-				})
-				.catch(() => {
-					/* preview is optional UX polish; never fail compile on its account */
-				});
+			// Best-effort: fetch the compiled flow so we can BOTH preview
+			// it during the wait AND check whether a Phase 4 contract was
+			// synthesized — if it was, we pivot to ContractReview instead
+			// of auto-running. Don't block matrix-gen on this fetch
+			// errors; we still progress to the matrix path.
+			let hasContract = false;
+			try {
+				const res = await api.getFlow(flowId);
+				const f = (res as {
+					flow?: FlowPreview & { featureContract?: unknown };
+				}).flow;
+				if (f && Array.isArray(f.steps)) {
+					setFlowPreview({
+						name: f.name,
+						description: f.description ?? null,
+						steps: f.steps.map((s) => ({
+							index: s.index,
+							action: s.action,
+							intent: s.intent,
+							isCritical: s.isCritical,
+						})),
+					});
+				}
+				if (f?.featureContract) {
+					hasContract = true;
+				}
+			} catch {
+				/* preview / pivot detection is optional UX polish */
+			}
+			if (cancelled) return;
+			if (hasContract) {
+				console.info('[phase4:ui] contract present — pivoting to ContractReview');
+				setMode({ kind: 'contract_review', userEmail, flowId });
+				return;
+			}
 			try {
 				// Reuse existing variants if the user already generated some
 				// for this flow (e.g. retried compile). Saves an LLM call and

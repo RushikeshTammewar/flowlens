@@ -13,6 +13,18 @@ export type AppMode =
 	| { kind: 'idle'; userEmail: string }
 	| { kind: 'recording'; userEmail: string; recordingId: string; flowId: string; siteOrigin: string; actionsCaptured: number }
 	| { kind: 'reviewing'; userEmail: string; flowId: string }
+	| {
+			/**
+			 * Phase 4 / Tier 4 — Contract Review (UX §6.5). Lands here
+			 * automatically when compile finishes AND the flow has a
+			 * featureContract attached. Approving runs matrix-gen +
+			 * batch-start and transitions to `matrix_running`. Re-record
+			 * dumps back to `idle`.
+			 */
+			kind: 'contract_review';
+			userEmail: string;
+			flowId: string;
+	  }
 	| { kind: 'compiling'; userEmail: string; flowId: string; pct: number; stage: string }
 	| { kind: 'running'; userEmail: string; flowId: string; runId: string; liveUrl: string | null; currentStepIndex: number; stepResults: SidePanelStepResult[] }
 	| { kind: 'run_report'; userEmail: string; flowId: string; runId: string; status: string; healthScore: number | null; summary: string; stepResults: SidePanelStepResult[] }

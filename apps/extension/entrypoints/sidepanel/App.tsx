@@ -22,6 +22,7 @@ import { SignedOut } from './screens/SignedOut';
 import { Recording } from './screens/Recording';
 import { Reviewing } from './screens/Reviewing';
 import { Compiling } from './screens/Compiling';
+import { ContractReview } from './screens/ContractReview';
 import { FailedScreen } from './screens/Failed';
 import { Running } from './screens/Running';
 import { RunReport } from './screens/RunReport';
@@ -226,6 +227,7 @@ export function App() {
 			{mode.kind === 'idle' && <Idle />}
 			{mode.kind === 'recording' && <Recording />}
 			{mode.kind === 'reviewing' && <Reviewing />}
+			{mode.kind === 'contract_review' && <ContractReview />}
 			{mode.kind === 'compiling' && <Compiling />}
 			{mode.kind === 'running' && <Running />}
 			{mode.kind === 'run_report' && <RunReport />}

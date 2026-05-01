@@ -9,7 +9,8 @@ import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { requireAuthContext, UnauthorizedError } from '@/lib/auth';
-import { sites, flows, recordings } from '@flowlens/schema/db';
+import { sites, flows, recordings, orgs } from '@flowlens/schema/db';
+import { isPhase4Enabled } from '@/lib/feature-flags';
 
 const StartRequestSchema = z.object({
 	siteOrigin: z.string().url(),
@@ -27,6 +28,42 @@ export async function POST(req: NextRequest) {
 		const ctx = await requireAuthContext();
 		const json = (await req.json()) as unknown;
 		const body = StartRequestSchema.parse(json);
+
+		// Phase 4 / Tier 4 — free-tier feature cap. Each successfully
+		// COMPILED flow counts as one feature toward `monthlyFeatureCap`.
+		// We pre-check at recording start so the user gets a clean 402
+		// before they invest in the recording (rather than after compile,
+		// which would feel like a bait-and-switch). The actual increment
+		// happens in compile-inline.ts on successful compile.
+		//
+		// Pro / team plans bypass the gate (cap is informational, not
+		// enforced). Free orgs get 3 features/month by default (see
+		// orgs.monthlyFeatureCap). Reset is monthly via the existing
+		// monthlyRunsResetAt timestamp on the orgs row.
+		if (isPhase4Enabled() && ctx.org.plan === 'free') {
+			const orgRow = await db.query.orgs.findFirst({
+				where: eq(orgs.id, ctx.org.id),
+			});
+			if (orgRow) {
+				const cap = orgRow.monthlyFeatureCap ?? 3;
+				const used = orgRow.monthlyFeaturesConsumed ?? 0;
+				if (used >= cap) {
+					console.warn(
+						`[phase4:free-tier] recording.start blocked org=${ctx.org.id} used=${used} cap=${cap}`,
+					);
+					return NextResponse.json(
+						{
+							error: 'feature cap reached',
+							code: 'free_tier_feature_cap',
+							used,
+							cap,
+							message: `Free plan allows ${cap} features per month. Upgrade to add more.`,
+						},
+						{ status: 402 },
+					);
+				}
+			}
+		}
 
 		// Ensure site row exists for this org+origin.
 		const existingSite = await db.query.sites.findFirst({

@@ -33,14 +33,14 @@
  * dies mid-compile the flow row stays at `compiling`; the user can call
  * `POST /api/flows/:id/compile-retry` to re-trigger.
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { CompileOutput } from '@flowlens/flow-doc';
 import { compileRecording } from '@flowlens/flow-doc';
 import { syncCookiesToBuProfile } from '@flowlens/cookies-vault';
 import { createBuClient } from '@flowlens/bu-cloud-client';
 import type { PageControlSummary, RecordedAction } from '@flowlens/schema';
 import { db } from '@/lib/db';
-import { flows, sites, recordings } from '@flowlens/schema/db';
+import { flows, sites, recordings, orgs } from '@flowlens/schema/db';
 import { blobKeys } from '@/lib/blob';
 import { emitSseEvent } from '@/lib/sse-bus';
 import { setCompileStatus } from '@/lib/compile-runner';
@@ -221,6 +221,30 @@ export async function runCompileInline(
 				`[phase4:contract] persisted to flows.feature_contract flow=${input.flowId} ` +
 					`featureName=${JSON.stringify(compileResult.featureContract.featureName)} ` +
 					`behaviors=${compileResult.featureContract.expectedBehaviors.length}`,
+			);
+		}
+
+		// Phase 4 / Tier 4 — increment monthlyFeaturesConsumed for free
+		// tier orgs. Pre-check at recording.start already gated this; the
+		// counter increment here is the post-success commit. Atomic SQL
+		// increment avoids read-modify-write races between concurrent
+		// compiles. Pro/team orgs skip — cap is informational for them.
+		try {
+			await db
+				.update(orgs)
+				.set({
+					monthlyFeaturesConsumed: sql`${orgs.monthlyFeaturesConsumed} + 1`,
+				})
+				.where(eq(orgs.id, input.orgId));
+			console.info(
+				`[phase4:free-tier] incremented monthlyFeaturesConsumed for org=${input.orgId}`,
+			);
+		} catch (err) {
+			// Don't fail the compile if the counter bump fails — surface
+			// a warning so we can investigate, then move on.
+			console.warn(
+				`[phase4:free-tier] counter increment failed org=${input.orgId}:`,
+				(err as Error).message,
 			);
 		}
 

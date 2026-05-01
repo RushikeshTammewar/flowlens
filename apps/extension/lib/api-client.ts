@@ -72,6 +72,16 @@ export interface StartRecordingResponse {
  * `MatrixReport`. Mirrors the server-side enrichment in
  * `apps/web/src/app/api/batches/[id]/route.ts` — keep them in sync.
  */
+export interface AssertionEvalView {
+	passed: boolean;
+	evaluatedKind: string;
+	reason: string;
+	evidence?: Record<string, unknown>;
+	evaluatedAt?: string;
+	durationMs?: number;
+	llmFallbackUsed?: boolean;
+}
+
 export interface BatchStepResult {
 	stepIndex: number;
 	status: 'passed' | 'failed' | 'flaky' | 'blocked_auth' | 'inconclusive' | 'skipped';
@@ -80,7 +90,15 @@ export interface BatchStepResult {
 	replayScreenshotKey: string | null;
 	/** Fully-qualified blob URL when the sidecar uploaded a per-step screenshot. */
 	replayScreenshotUrl: string | null;
+	/**
+	 * Phase 4 / Tier 3 — variant-level assertion verdict. Populated only on
+	 * the variant's last step row (the aggregator + report read it from
+	 * here). Null for V1 / Phase 3 step rows.
+	 */
+	assertionEval: AssertionEvalView | null;
 }
+
+export type Phase4Mode = 'verify' | 'edge' | 'stress' | 'adversarial' | 'invariant';
 
 export interface BatchVariantRow {
 	variant: {
@@ -90,6 +108,15 @@ export interface BatchVariantRow {
 		description: string;
 		fragility: string;
 		expectedOutcome: { kind: string; criteria?: string; messageContains?: string[] };
+		// Phase 4 / Tier 1+ columns (LLD §1.1). Null on legacy V1 variants.
+		mode: Phase4Mode | null;
+		behaviorId: string | null;
+		shouldPass: boolean;
+		riskHypothesis: string | null;
+		assertion: {
+			spec: { kind: string; [k: string]: unknown };
+			fallbackPrompt: string;
+		} | null;
 	};
 	run: {
 		id: string;
@@ -101,6 +128,65 @@ export interface BatchVariantRow {
 		finishedAt: string | null;
 	} | null;
 	stepResults: BatchStepResult[];
+}
+
+/**
+ * Phase 4 / Tier 4 — `flow.featureContract` shape mirrored for the
+ * extension. Source of truth: packages/schema/src/feature-contract.ts.
+ * The contract is null on legacy flows compiled before Phase 4 turned
+ * on; ContractReview falls back to the description in that case.
+ */
+export interface FeatureContractView {
+	featureName: string;
+	inputs: Array<{
+		name: string;
+		controlType: string;
+		domain: 'text' | 'number' | string[];
+		constraints: {
+			minLength?: number | null;
+			maxLength?: number | null;
+			min?: number | null;
+			max?: number | null;
+			pattern?: string | null;
+		} | null;
+		defaultValue: string | null;
+	}>;
+	expectedBehaviors: Array<{
+		id: string;
+		given: string;
+		when: string;
+		then: string;
+		observableOutcome: string;
+		importance: 'critical' | 'normal';
+	}>;
+	invariants: string[];
+	synthesizedAt: string | null;
+	synthesizedByModel: string | null;
+}
+
+export interface FlowWithContractView {
+	id: string;
+	name: string;
+	description: string | null;
+	preconditions: string[];
+	postconditions: string[];
+	fragilityHints: string[];
+	status: 'draft' | 'compiling' | 'ready' | 'archived';
+	featureContract: FeatureContractView | null;
+	cookieSnapshot: {
+		cookieCount: number;
+		authDetected: boolean;
+		origin: string | null;
+	} | null;
+	steps: Array<{
+		index: number;
+		action: string;
+		intent: string;
+		expectedOutcome: string;
+		isCritical: boolean;
+		recordedScreenshotKey?: string;
+		recordedScreenshotUrl?: string;
+	}>;
 }
 
 export interface BatchFlowView {
@@ -117,14 +203,44 @@ export interface BatchFlowView {
 	}>;
 }
 
+/**
+ * Phase 4 / Tier 1 — per-behavior verdict aggregated from
+ * variant.assertionEval + variant.shouldPass. Persisted on
+ * `run_batches.behavior_verdicts` (LLD §1.1 schema delta).
+ */
+export interface ModeOutcomeView {
+	mode: Phase4Mode;
+	variantsTotal: number;
+	variantsPassed: number;
+	variantsFailed: number;
+}
+
+export interface BehaviorVerdictView {
+	behaviorId: string;
+	behaviorTitle: string;
+	status: 'verified' | 'failed' | 'partial' | 'inconclusive';
+	modes: ModeOutcomeView[];
+	failingVariantIds: string[];
+	failureSummary?: string;
+}
+
 export interface BatchView {
 	batch: {
 		id: string;
+		flowId: string;
 		status: string;
 		variantIds: string[];
 		startedAt: string | null;
 		finishedAt: string | null;
 		aiClusterSummary: string | null;
+		// Phase 4 / Tier 3 — populated by aggregateBatchVerdict() at batch
+		// completion. Null while the batch is still running and on legacy
+		// (Phase 3) batches.
+		behaviorVerdicts: BehaviorVerdictView[] | null;
+		correctnessVerifiedCount: number;
+		correctnessTotalCount: number;
+		robustnessVerifiedCount: number;
+		robustnessTotalCount: number;
 	};
 	flow: BatchFlowView | null;
 	variants: BatchVariantRow[];
@@ -215,6 +331,18 @@ export const api = {
 		const res = await authedFetch(path);
 		if (!res.ok) throw await toApiError(res, path);
 		return res.json();
+	},
+	/**
+	 * Phase 4 / Tier 4 — typed read of /api/flows/:id with the
+	 * featureContract surfaced. `ContractReview` and the auto-run path in
+	 * `Compiling` use this; the existing `getFlow()` stays for legacy
+	 * callers that don't care about the contract.
+	 */
+	async getFlowWithContract(flowId: string): Promise<{ flow: FlowWithContractView }> {
+		const path = `/api/flows/${flowId}`;
+		const res = await authedFetch(path);
+		if (!res.ok) throw await toApiError(res, path);
+		return (await res.json()) as { flow: FlowWithContractView };
 	},
 	async listFlows(query: { siteId?: string; status?: string }): Promise<{ flows: unknown[] }> {
 		const params = new URLSearchParams();
