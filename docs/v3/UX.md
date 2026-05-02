@@ -434,36 +434,48 @@ Notes:
 
 ### 6.6 Running — matrix in flight
 
-The side panel during a run is the **watch-live surface**: a live iframe of the BU Cloud browser plus a per-behavior progress grid with mode pills. It does NOT redirect to the web mid-run — that would break the magic moment. The web report is the destination for *after* the run completes.
+> **Updated v3.1.** The original v3 spec made the side panel the live-watching surface (5 stacked iframes inside a 400 px column). Live testing showed each iframe shrinks to ~350×140 px — not actually readable for any non-trivial site. v3.1 inverts the split: the side panel is the **status surface** (compact behavior×mode grid + ONE featured iframe of the user's choice), and a new **Web Liveboard** (§7.6) is the multi-iframe watch-at-scale surface, auto-opened in a new browser tab on Approve. See §8 for the full surface split.
+
+The side panel during a run is the **status + glance** surface: scan the behavior×mode grid in 5 seconds, peek at one featured cloud-browser iframe to ground the abstraction in motion, and trust that the parallel watching happens on the wider Web Liveboard tab Flowlens just opened for them.
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│  ✦ Flowlens         shop.example.com           [👤  ⚙]      │
+│  ✦ Flowlens   shop.example.com   ● BATCH       4/12 passed   │
 ├──────────────────────────────────────────────────────────────┤
 │                                                                │
-│  Running: Filter products                                     │
-│  ───────────────────────────                                  │
-│  Variant 7 of 12 · 18.4 s · est. 24 s left                    │
-│                                                                │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │ [iframe of liveUrl — cloud browser doing the thing]    │    │
-│  │                                                        │    │
-│  │                                                        │    │
-│  └──────────────────────────────────────────────────────┘    │
+│  Running: Filter products       [Open Liveboard ↗]            │
+│  ─────────────────────────                                    │
+│  3 running · 4 queued · 1 failed · 4 passed · 1m 18s elapsed  │
 │                                                                │
 │  By behavior                                                  │
 │  ────────────                                                 │
-│  B1 Category narrows list      [V✓][V✓][E✓][S·][A·]          │
-│  B2 Min price hides cheap      [V✓][E·][S○][A○]               │
-│  B3 Min rating filters         [V·][E○][S○][A○]               │
-│  B4 Reset clears filters       [V○][E○]                       │
-│  Inv1 count never increases    [running…]                     │
+│              Verify  Edge  Stress  Adv  Inv  ┃ Cor ┃ Rob     │
+│  B1 Cat       ✓✓     ✓     ·       ·    —    ┃  ✓  ┃  ·      │
+│  B2 Min$      ✓      ·     •       ○    —    ┃  ·  ┃  ·      │
+│  B3 Rating    ✓      ○     ○       ○    —    ┃  ·  ┃  ·      │
+│  B4 Reset     ✗      —     —       —    —    ┃  ✗  ┃  —      │
+│  Inv1 count   —      —     —       —    •    ┃  —  ┃  ·      │
 │                                                                │
-│  Legend  V verify · E edge · S stress · A adversarial         │
-│         ✓ pass  ✗ fail  · running  ○ queued                  │
+│  Legend  V·E·S·A·I  ✓ pass · ✗ fail · • running · ○ queued    │
 │                                                                │
-│  Now: B2 / Stress · "rapidly toggle min-price 12 times"       │
-│       AI agent picking element on live page…                  │
+│  Featured live (click any chip below to swap)                 │
+│  ────────────────────────────────────────────                 │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │ ●LIVE  cloud  ·  B2 Min$ / Stress       [↗ tab]      │    │
+│  ├──────────────────────────────────────────────────────┤    │
+│  │ [iframe — full panel width × 220 px tall]              │    │
+│  │  https://shop.example.com/                             │    │
+│  │  practicetestautomation.com                            │    │
+│  │  [readable cloud browser viewport]                     │    │
+│  │                                                        │    │
+│  └──────────────────────────────────────────────────────┘    │
+│                                                                │
+│  Other variants (click to feature)                            │
+│  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐                       │
+│  │B1V·│  │B1V✓│  │B3V·│  │B4V✗│  │I1·│  …  + 7 more           │
+│  └────┘  └────┘  └────┘  └────┘  └────┘                       │
+│                                                                │
+│  ▸ What we think you're testing                  (collapsed)  │
 │                                                                │
 │  ┌──────────────────────┐  ┌──────────────────────┐           │
 │  │  ⏸ Pause              │  │  ⏹ Stop                │           │
@@ -472,7 +484,13 @@ The side panel during a run is the **watch-live surface**: a live iframe of the 
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The "AI agent picking element" status flips to "Action executed" as soon as it lands; for variants on the CDP-direct fast path (~70 % of variants — see [HLD §4.5.2](HLD.md#452-how-replay-executes-in-the-remote-browser)) the line reads "Resolved by testid · executed" instead. The user feels every thought.
+Notes:
+- **`Open Liveboard ↗`** — appears in the page header. Opens / re-focuses the Web Liveboard tab (§7.6) at `${webUrl}/app/features/${flowId}/runs/${batchId}?live=1`. Auto-opened once on Approve; this CTA is for re-opening if the user closed the tab.
+- **Behavior × mode grid is the headline** now. Two-axis Cor / Rob columns mirror the post-run report so users learn the layout once.
+- **One featured iframe**, full panel width, 220 px tall. Defaults to the most-recently-running variant. Click any variant chip below to swap.
+- **Variant chips strip** — each chip shows behavior code + mode + status glyph. Compact: ~12 chips fit in the panel width. Click to feature; hover for full variant name; chip-level `↗` (when shown) opens the variant's BU Cloud `liveUrl` directly in a new tab at full size.
+- **Recorded-flow context card** is collapsed by default — the user already approved the contract; they don't need to re-read 30 step intents while the matrix is running. Expandable on demand.
+- **Current-action narration** ("AI agent picking element…" / "Resolved by testid · executed") moves into the featured iframe header so it stays attached to the actual stream you're watching.
 
 ### 6.7 Matrix Report (compact, in side panel)
 
@@ -822,6 +840,64 @@ Notes:
 - **Cross-deploy regression diff** is a first-class section, not buried — it's the answer to "which commit broke it?". When GitHub is connected, deploy windows hyperlink to commit ranges.
 - **Schedule** lives on the Feature detail (§7.3), not here — schedule is a feature-level setting, not per-run.
 
+### 7.6 Web Liveboard (`/app/features/[id]/runs/[batchId]?live=1`)
+
+> **New in v3.1.** Auto-opened in a new browser tab when the user clicks **Approve & Run Tests** in the side panel (§6.5). Same URL as the Run Report (§7.4) — the `?live=1` query param flips the page into "watching" mode; once `batch.status === 'completed'` it self-promotes to the Run Report layout (no redirect, smooth in-place transition). The user ends up on the same page they would have landed on via `Open full report ↗` after the run, but they got there proactively at run START instead of at run END.
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│  ✦ Flowlens     shop.example.com    ● BATCH RUNNING       4/12 passed     │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  ← Filter products                                                         │
+│  Run #47 · started 1m 18s ago                                              │
+│  ─────────────────────────────                                             │
+│                                                                            │
+│  ┌──────────────────────────────────────────────────────────────────┐     │
+│  │  3 running · 4 queued · 1 failed · 4 passed                      │     │
+│  └──────────────────────────────────────────────────────────────────┘     │
+│                                                                            │
+│  By behavior                                                               │
+│  ────────────                                                              │
+│  [same compact behavior × mode grid as side panel — kept in sync]         │
+│                                                                            │
+│  Live cloud browsers                                                       │
+│  ────────────────────                                                      │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐            │
+│  │ B1 Cat / Verify │  │ B2 Min$ / Stress│  │ B3 Rating / Vrf │            │
+│  │ ●LIVE  ↗        │  │ ●LIVE  ↗        │  │ ●LIVE  ↗        │            │
+│  ├─────────────────┤  ├─────────────────┤  ├─────────────────┤            │
+│  │ [iframe         │  │ [iframe         │  │ [iframe         │            │
+│  │  600×400]       │  │  600×400]       │  │  600×400]       │            │
+│  │                 │  │                 │  │                 │            │
+│  │                 │  │                 │  │                 │            │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘            │
+│                                                                            │
+│  ┌─────────────────┐  ┌─────────────────┐                                  │
+│  │ Inv1 / count    │  │ B4 Reset / Vrf  │                                  │
+│  │ ●LIVE  ↗        │  │ ✗ FAILED        │                                  │
+│  ├─────────────────┤  ├─────────────────┤                                  │
+│  │ [iframe]        │  │ [last frame     │                                  │
+│  │                 │  │  + Open evidence│                                  │
+│  │                 │  │  ↓]             │                                  │
+│  └─────────────────┘  └─────────────────┘                                  │
+│                                                                            │
+│  Queued (4)  ·  Click any to feature when it starts                       │
+│  [chip] [chip] [chip] [chip]                                               │
+│                                                                            │
+│  When the batch completes, this page becomes the Run Report (§7.4)        │
+│  — same URL, same tab, no nav. Full evidence + cluster summary slot in.   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Notes:
+- **Layout is a 2- or 3-wide grid of iframes** — depends on viewport. Each iframe sized for actual readability (600×400 minimum). On a 1440px monitor that's a 3×2 grid with 5 variants visible at once. On a tablet it stacks 2-wide.
+- **Per-iframe `↗` button** opens that variant's `liveUrl` directly (BU Cloud's hosted view) in another tab — useful when one variant's page is dense and you want full window.
+- **Failed variants stop showing the iframe** (BU Cloud session has stopped). They show the last captured frame + a CTA to scroll down to the variant's evidence panel below (which is already the §7.4 layout, just rendered while the rest of the batch is still running).
+- **Same data source as Run Report** — `GET /api/batches/:id` polled every 2.5 s. The page just renders different React subtrees based on `batch.status` and `?live=1`. Single page component, two render modes — no second route to maintain.
+- **Tab-promotion behavior** — once `batch.status === 'completed'`, the live grid fades out and the full evidence panels fade in. No URL change; `?live=1` becomes informational. If the user reloads at that point, they get the Run Report layout. The `Open full report ↗` button in the side panel's MatrixReport (§6.7) deep-links to the SAME URL without `?live=1`.
+
 ### 7.5 Public share (`/app/runs/[id]/share/[token]`)
 
 Same layout as 7.4 but:
@@ -836,15 +912,19 @@ Same layout as 7.4 but:
 
 ## 8. Surface split — side panel vs web dashboard
 
-Two surfaces, two jobs. This isn't a fallback for "the side panel can't fit everything" — each surface is **chosen** for what it does best. Side panel is action-shaped (narrow, present, in-flow). Web is data-shaped (wide, comparative, sharable).
+> **Updated v3.1.** Live testing on a 1024×600 demo screen showed that 5 stacked liveUrl iframes inside a 400 px side panel each shrink to ~350×140 px — too small to actually read what the cloud browser is doing. v3.1 inverts the live-watching call: the side panel becomes the **status surface** (compact behavior×mode grid + ONE featured iframe), the web becomes the **watch-at-scale surface** (multi-iframe Liveboard, see §7.6), and the **Liveboard tab is auto-opened on Approve** so the user doesn't have to discover or click for it.
 
-### The split, by job
+Two surfaces, two jobs. The side panel is action-shaped (narrow, present, in-flow); the web is data-shaped (wide, comparative, sharable). Each surface is **chosen** for what it does best — neither is a fallback for the other.
+
+### The split, by job (v3.1)
 
 | Job                                          | Lives on                  | Why there                                                                                  |
 | -------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------ |
 | Record a feature                             | **Side panel**            | The recorder needs the page; the panel sits next to it.                                    |
 | Approve the Feature Contract                 | **Side panel**            | The "I trust what you understood" moment is short and decisive — no need for a wide view.  |
-| Watch a matrix run live                      | **Side panel**            | The liveUrl iframe + per-behavior progress is exactly the watch-live magic moment. Don't redirect to web mid-run. |
+| **Compact behavior × mode progress (status)** | **Side panel**           | Glanceable in 5 seconds; fits 400 px column perfectly. Same shape as the post-run report so the layout is learned once. |
+| **Watch ONE cloud browser at readable size** | **Side panel** (featured) | Picks the most-recently-running variant; user can swap with one click on a chip. ~220 px tall iframe across the full panel width. |
+| **Watch ALL cloud browsers in parallel at full size** | **Web Liveboard (§7.6)** | 5 iframes at 600×400 in a responsive grid on a 1440 px monitor — actually readable. Auto-opened in a new browser tab when Approve fires. |
 | Compact two-axis verdict + cluster headline  | **Side panel**            | Scan in 5 seconds; drives the next decision (re-run, schedule, share, deep-dive).          |
 | Quick actions: Re-run failed, Schedule daily, Share | **Side panel**     | One tap each. No surface change required.                                                  |
 | Refresh expired auth                         | **Side panel**            | Tied to the recorded site, which the user just visited in the same window.                 |
@@ -857,21 +937,32 @@ Two surfaces, two jobs. This isn't a fallback for "the side panel can't fit ever
 | Behavior-level filtering, variant lightboxes | **Web**                   | Wide layout, wide viewport, multiple panes.                                                |
 | Team / org settings, billing, integrations   | **Web**                   | Once-a-month tasks; not an in-flow surface.                                                |
 
-### Handoff — side panel → web
+### Handoffs — when each surface opens which one
 
-After a matrix run completes, the side panel renders the compact `MatrixReport` (§6.7). Its **primary CTA** is `Open full report ↗`, which deep-links to:
+**Side panel → Web Liveboard (auto, on Approve):**
+When the user clicks **Approve & Run Tests** in §6.5, the extension immediately opens a new browser tab (`chrome.tabs.create({ url, active: false })`) at:
 
 ```text
-${flowlensWebUrl}/app/features/${flowId}/runs/${batchId}
+${flowlensWebUrl}/app/features/${flowId}/runs/${batchId}?live=1
 ```
 
-…in a new tab (`target="_blank"`, `rel="noreferrer"`), matching the existing `Reviewing.tsx` pattern. The side panel **stays open** with the compact verdict still visible, so the secondary quick actions (Re-run failed only · Schedule daily · Share) remain one click away while the user explores the deep view in the new tab.
+`active: false` means the new tab opens in the background — the user keeps focus on the side panel + the recorded site, and switches to the Liveboard tab when they want the wide view. The side panel header gets an `Open Liveboard ↗` CTA to re-focus the tab if it gets lost (or re-open it if the user closed it).
+
+**Side panel → Web Run Report (manual, on completion):**
+After the batch terminates, the side panel renders the compact `MatrixReport` (§6.7). The Liveboard tab silently self-promotes to the Run Report layout (same URL, no nav). The `Open full report ↗` CTA in the side panel deep-links to the **same URL** (without `?live=1`). If the user closed the auto-opened tab earlier, this re-opens it; if it's still open, the browser focuses the existing tab (Chrome's default behavior on duplicate URLs).
 
 ### What is intentionally NOT on the web
 
 - **No live record button.** Recording requires the extension's content script + tab access. The web's "Record new feature" CTA links the user to the extension instead.
-- **No live-run iframe duplicate.** The cloud browser is being watched in the side panel; mirroring it on the web is wasted bandwidth and a worse layout.
 - **No contract approval on the web (in v1).** Approval is a recorder-flow moment, not a dashboard one.
+
+### What is intentionally NOT on the side panel
+
+- **No multi-iframe parallel watching.** The 400 px column makes each iframe unreadable. Use the Liveboard.
+- **No long-form text** (cluster summary truncated to top cluster, ~2 lines).
+- **No side-by-side images** (any image comparison opens the web report).
+- **No cross-deploy regression diff** (web only — it needs two report layouts side by side).
+- **No team / billing / integrations UI** (settings on the web; the side panel only carries Account + Sites + Notifications).
 
 ### What is intentionally NOT on the side panel
 
@@ -896,8 +987,10 @@ Both surfaces query the same Next.js API routes — the side panel via `fetch` f
 | Compile stage advances            | Stage row checkmarks in; the next row's spinner starts; the "≈ 10–20 s" hint stays put                              |
 | Variant pill flips ✓ → ✗          | Pill cross-fades; the failing variant gets a soft red glow that lingers until the user looks at the report          |
 | Behavior row goes Robustness ✗    | The Robust column cell flips first; the cluster summary at the bottom updates in place                              |
-| Click "Approve and run tests"     | Button morphs into "Spinning up cloud browser…" with a linear progress bar; transitions into Running screen on first SSE |
-| Click "Open full report ↗"        | Button shows a brief spinner, opens the new tab; side panel stays on the MatrixReport                               |
+| Click "Approve and run tests"     | (1) In-flight progress card slides in below the header with rotating "what the AI is thinking" hints + ETA + elapsed counter. (2) **A new browser tab opens in the background** pointing at the Web Liveboard (§7.6) — tab focus stays on the side panel. (3) On first SSE the side panel transitions to the Running screen with the featured-iframe layout. |
+| Click "Open Liveboard ↗" (header in Running screen) | Re-focus the auto-opened Liveboard tab; if closed, open a new one. Single window, no duplicate tabs (Chrome de-dupes by URL). |
+| Click any variant chip in Running screen          | The featured-iframe header animates the variant code into place; iframe `src` swaps via a 200ms cross-fade so the cloud stream doesn't visibly hard-cut. |
+| Click "Open full report ↗" (after run completes)  | Re-focus / reopen the same tab as the Liveboard (now self-promoted to Run Report). Side panel stays on MatrixReport. |
 | Live URL iframe loads             | Fade-in over 300 ms; "watching the cloud browser…" caption appears below                                            |
 | Auth banner                       | Slide down from top with 100 ms ease-out; never auto-dismisses                                                      |
 | Compile complete                  | Number badge on the side panel icon flashes briefly (just enough to be noticed if the user has navigated away)      |

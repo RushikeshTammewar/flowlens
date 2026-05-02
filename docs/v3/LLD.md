@@ -682,6 +682,17 @@ PATCH  /api/flows/:flowId                     edit name / description / steps (l
 DELETE /api/flows/:flowId                     soft delete + cookie purge
 POST   /api/flows/:flowId/compile             re-compile (rare; bumps featureContract too)
 GET    /api/flows/:flowId/compile-status      polled by extension during compile
+                                               Phase 4 v3.1 response gains:
+                                                 compile.recentNarrations?: Array<{
+                                                   stepIndex, actionType, intent, isCritical
+                                                 }>
+                                               Rolling 8-entry buffer of the most recently
+                                               narrated steps. Set on every progress tick
+                                               during stage='narrate'; cleared once the
+                                               pipeline moves to synthesize. Powers the
+                                               "what the AI just decoded" live feed in
+                                               apps/extension/.../screens/Compiling.tsx
+                                               (UX §1 — AI works in the open).
 ```
 
 Free-tier enforcement: `POST /api/recordings/start` checks `count(flows where org_id = ? and status != 'archived') < orgs.monthly_feature_cap` before issuing a `recordingId`. 402 with `error: 'feature_cap_reached'` otherwise.
@@ -1497,6 +1508,127 @@ flowchart TB
     Aggregate --> Cluster[matrixCluster LLM<br/>1-3 sentence summary]
     Cluster --> SSE[SSE batch_complete]
 ```
+
+### 6.7 Watch-live surfaces — side panel + Web Liveboard (v3.1 — additive)
+
+Two surfaces poll the same `GET /api/batches/:id` every 2.5 s and render different subtrees of the response. **No new endpoints, no SSE, no second route.** The side panel is the always-visible status surface; the Web Liveboard is the optional wide-screen watch-at-scale surface, auto-opened in a new browser tab the moment Approve fires.
+
+#### Why we changed the v3 spec
+
+UX §6.6 originally placed all liveUrl iframes in the side panel. On a 400 px column with 5 variants stacked vertically, each iframe shrinks to ~350×140 — too small to read what the cloud browser is actually doing. v3.1 inverts the call: side panel keeps ONE featured iframe at full panel width; the Web Liveboard (new web route, see below) renders the parallel grid at usable size.
+
+#### Auto-tab-open contract (extension → web)
+
+In `apps/extension/entrypoints/sidepanel/screens/ContractReview.tsx`, the moment `api.startBatchRun()` returns a `batchId` AND before `setMode({ kind: 'matrix_running', ... })`:
+
+```ts
+// Phase 4 / Tier 4 v3.1 — auto-open the wide-screen Liveboard so the
+// user has a real-size view of the matrix in flight without having to
+// hunt for a button. `active: false` keeps focus on the recorder side
+// panel + the recorded site; the user switches when they want.
+const liveboardUrl =
+  `${APP_CONFIG.flowlensWebUrl}/app/features/${flowId}/runs/${batch.batchId}?live=1`;
+try {
+  await chrome.tabs.create({ url: liveboardUrl, active: false });
+} catch (err) {
+  // Manifest already requests "tabs"; failure here is non-fatal —
+  // the side panel still has the Open Liveboard ↗ CTA.
+  console.warn('[phase4:ui] auto-open Liveboard failed:', err);
+}
+```
+
+`chrome.tabs.create` is available because the extension manifest already declares the `"tabs"` permission (used elsewhere for `chrome.tabs.captureVisibleTab` during recording — see `wxt.config.ts`). No new permission grant required at install time.
+
+If the user closed the auto-opened tab, the side panel header surfaces a manual `Open Liveboard ↗` CTA in `MatrixRunning.tsx` that re-runs the same `chrome.tabs.create`. Chrome de-dupes tabs by URL within the same session, so re-clicking focuses the existing tab instead of opening a duplicate.
+
+#### Web Liveboard route (`/app/features/[id]/runs/[batchId]?live=1`)
+
+Same file as the post-run Run Report (`apps/web/src/app/app/features/[id]/runs/[batchId]/page.tsx`). The page reads the `?live=1` query param + `batch.status`:
+
+| `?live` | `batch.status` | Render mode |
+| --- | --- | --- |
+| `1` | `queued` / `running` | **Liveboard**: header status pill + behavior×mode grid + multi-iframe grid (2-3 wide responsive) + "this page becomes the Run Report when batch completes" footer note. Polls every 2.5 s. |
+| `1` | `completed` / `errored` | **Self-promote**: liveboard subtree fades out, Run Report subtree fades in. URL stays as-is; `?live=1` becomes informational. |
+| absent | (any) | **Run Report** (existing): two-axis verdict + cluster summary + per-variant evidence panels. |
+
+This keeps the route surface single — no `/liveboard/[batchId]` to maintain, no separate auth helper, no separate API. The page just chooses what to mount.
+
+```tsx
+// apps/web/src/app/app/features/[id]/runs/[batchId]/page.tsx (additive)
+const isLive =
+  searchParams.live === '1' &&
+  (batch.status === 'queued' || batch.status === 'running');
+
+return (
+  <main>
+    <Header batch={batch} flow={flow} />
+    {isLive ? (
+      <LiveboardPanel
+        variants={variantsView}
+        verdicts={verdicts /* may be empty */}
+        grid={grid}
+      />
+    ) : (
+      <RunReportPanel
+        variants={variantsView}
+        verdicts={verdicts}
+        grid={grid}
+        contract={contract}
+      />
+    )}
+  </main>
+);
+```
+
+`LiveboardPanel` is a client component (it owns the polling hook + iframe `src` lifecycle); the rest of the page stays an RSC. The polling-driven re-render only re-paints the `LiveboardPanel` subtree.
+
+#### Side panel `MatrixRunning` redesign (delta against v3 spec)
+
+Same data source (`api.getBatch(batchId)` polled every 2.5 s) — what changed is the React tree:
+
+```ts
+// apps/extension/entrypoints/sidepanel/screens/MatrixRunning.tsx
+function MatrixRunning() {
+  const { data } = usePolledBatch(batchId);  // existing hook
+  const variants = data?.variants ?? [];
+  const featuredVariant = useMemo(
+    () =>
+      variants.find((v) => v.variant.id === userPickedId)
+      ?? variants.find((v) => v.run?.status === 'running' && v.run?.liveUrl)
+      ?? variants.find((v) => v.run?.liveUrl)
+      ?? null,
+    [variants, userPickedId],
+  );
+
+  return (
+    <PageShell>
+      <Header counts={counts} onOpenLiveboard={() => openLiveboard()} />
+      <BehaviorModeGrid rows={grid.rows} modesPresent={grid.modesPresent} />
+      <FeaturedIframeCard variant={featuredVariant} />
+      <VariantChipsStrip
+        variants={variants}
+        featuredId={featuredVariant?.variant.id}
+        onPick={(id) => setUserPickedId(id)}
+      />
+      <FlowContextCard flow={flow} defaultOpen={false} />
+    </PageShell>
+  );
+}
+```
+
+No new state in zustand, no new endpoint. The featured-variant choice is local component state; on poll updates it sticks to the user's pick if any, otherwise auto-tracks the first running variant.
+
+#### What the v3 spec said vs what v3.1 says
+
+| | v3 (original) | v3.1 (current) |
+| --- | --- | --- |
+| Side panel during run | All N iframes stacked vertically | 1 featured iframe + chips strip + grid |
+| Web during run | "No live-run iframe duplicate" | **Liveboard**: parallel grid of N iframes at 600×400 |
+| Tab auto-open | None | `chrome.tabs.create({ active: false })` on Approve |
+| Side panel `Open full report ↗` URL | New tab, post-batch only | Same URL whether opened pre-batch (`?live=1`) or post-batch — page chooses render mode |
+| Endpoints touched | None | None — same `GET /api/batches/:id` |
+| New state | None | None |
+| New permissions | None | None (`"tabs"` already in manifest) |
 
 ### Recovery strategies (per failure type)
 
