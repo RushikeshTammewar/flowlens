@@ -69,6 +69,9 @@ export default async function RunReportPage({ params, searchParams }: PageProps)
 
 	const flow = await db.query.flows.findFirst({ where: eq(flows.id, flowId) });
 	if (!flow || flow.orgId !== auth.org.id) {
+		console.warn(
+			`[phase4:web] flow ${flowId} not visible to org ${auth.org.id} → 404`,
+		);
 		notFound();
 	}
 
@@ -76,6 +79,9 @@ export default async function RunReportPage({ params, searchParams }: PageProps)
 		where: eq(runBatches.id, batchId),
 	});
 	if (!batch || batch.orgId !== auth.org.id || batch.flowId !== flowId) {
+		console.warn(
+			`[phase4:web] batch ${batchId} not visible (org=${auth.org.id} flowId=${flowId}) → 404`,
+		);
 		notFound();
 	}
 

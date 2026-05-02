@@ -126,29 +126,25 @@ async function tryDemoBypass(): Promise<AuthContext | null> {
 /**
  * Phase 4 / Tier 4 — page-side auth resolver for full-report deep links.
  *
- * Web pages opened from the extension's "Open full report ↗" CTA arrive
- * via a new browser tab without a bearer header. This helper:
- *   1. Tries the live Clerk session (cookie-based) — succeeds for
- *      signed-in users hitting the dashboard.
- *   2. Falls back to the singleton demo org when FLOWLENS_DEMO_MODE=true
- *      AND no Clerk session is present. Lets closed-beta demo users
- *      land on the report without sign-in (matches the extension's
- *      zero-friction stance).
+ * Web pages opened from the extension's "Open full report ↗" CTA (or
+ * the v3.1 auto-opened Liveboard tab) arrive via a new browser tab
+ * without a bearer header. This helper:
+ *
+ *   1. **DEMO MODE FIRST.** When `FLOWLENS_DEMO_MODE=true`, the demo
+ *      org is authoritative for ALL /app/* page renders, regardless of
+ *      whether a real Clerk session also happens to exist on the same
+ *      browser. The extension creates flows / batches under the demo
+ *      org via the demo bearer; if the page falls through to a real
+ *      Clerk session it will resolve to a different org and fail every
+ *      flow / batch ownership check with a confusing 404. The closed-
+ *      beta demo bearer is the *intended* identity in this mode.
+ *   2. Outside demo mode, prefer the live Clerk session (cookie-based).
  *   3. Returns null when neither path resolves — caller redirects to
  *      sign-in.
+ *
+ * Logged under scope: [phase4:auth]
  */
 export async function tryPageAuthContext(): Promise<AuthContext | null> {
-	try {
-		const sess = await auth();
-		if (sess.userId) {
-			// We have a live Clerk session — fall through to the standard
-			// resolver which upserts org + user as needed.
-			return await requireAuthContext();
-		}
-	} catch {
-		// auth() can throw when invoked outside a Next request — defensive
-		// catch so we don't 500 the page on dev edge cases.
-	}
 	if (process.env.FLOWLENS_DEMO_MODE === 'true') {
 		const orgRow = await ensureOrg({
 			clerkOrgId: DEMO_CLERK_ORG_ID,
@@ -163,6 +159,15 @@ export async function tryPageAuthContext(): Promise<AuthContext | null> {
 			user: { id: userRow.id, email: userRow.email, clerkUserId: DEMO_CLERK_USER_ID },
 			org: { id: orgRow.id, clerkOrgId: orgRow.clerkOrgId, plan: orgRow.plan },
 		};
+	}
+	try {
+		const sess = await auth();
+		if (sess.userId) {
+			return await requireAuthContext();
+		}
+	} catch {
+		// auth() can throw when invoked outside a Next request — defensive
+		// catch so we don't 500 the page on dev edge cases.
 	}
 	return null;
 }
