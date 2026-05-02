@@ -22,12 +22,25 @@ const isPublicRoute = createRouteMatcher([
 	'/sign-up(.*)',
 ]);
 
+// Demo-mode flag — when on, browser navigations to /app/* skip Clerk
+// and the page server-component falls through to the singleton demo
+// {user, org} via tryPageAuthContext(). Without this, the side panel's
+// "Open full report ↗" deep-link opens a new tab that Clerk redirects
+// to sign-in BEFORE the page can apply its demo bypass. Closed-beta
+// builds ship with FLOWLENS_DEMO_MODE=true.
+const DEMO_MODE = process.env.FLOWLENS_DEMO_MODE === 'true';
+
 export default clerkMiddleware(async (auth, req) => {
 	// Demo-bearer requests bypass Clerk; route handlers validate via tryDemoBypass().
 	// Without this, Clerk's auth.protect() returns 404 for the unrecognized bearer
 	// before our handlers even see the request.
 	const authHeader = req.headers.get('authorization') ?? req.headers.get('Authorization');
 	if (authHeader?.startsWith('Bearer flowlens-demo-')) {
+		return;
+	}
+	// Demo-mode browser navigations to /app/* — let them through so the
+	// server-component's tryPageAuthContext() can lift the demo org.
+	if (DEMO_MODE && req.nextUrl.pathname.startsWith('/app/')) {
 		return;
 	}
 	if (!isPublicRoute(req)) {

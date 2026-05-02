@@ -172,12 +172,16 @@ async function main() {
 		);
 	}
 
-	// 5. Start batch
-	log('5/5 POST /api/flows/:id/runs/batch');
+	// 5. Start batch with the FULL variant set (was 5 — we want all
+	// 4-5 modes represented in the rollup so the report exercises the
+	// behavior×mode grid + adversarial polarity flip + invariant axis).
+	const variantsToRun = parseInt(process.env.FLOWLENS_ETE_VARIANT_COUNT ?? '0', 10) ||
+		variants.length;
+	log(`5/5 POST /api/flows/:id/runs/batch — running ${variantsToRun} variants`);
 	const batch = await api(`/api/flows/${flow.id}/runs/batch`, {
 		method: 'POST',
 		body: JSON.stringify({
-			variantIds: variants.slice(0, 5).map((v) => v.id), // 5-variant smoke to keep cost low
+			variantIds: variants.slice(0, variantsToRun).map((v) => v.id),
 			parallelism: 5,
 		}),
 	});

@@ -15,7 +15,7 @@
  * Logged under scope: [phase4:ui]
  */
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Cookie, Lock, RefreshCw, ShieldCheck } from 'lucide-react';
+import { ChevronDown, ChevronRight, Cookie, Cpu, Lock, RefreshCw, ShieldCheck } from 'lucide-react';
 import { useAppState } from '../../../lib/state';
 import { api, type FeatureContractView, type FlowWithContractView } from '../../../lib/api-client';
 import {
@@ -25,18 +25,46 @@ import {
 	PanelFooter,
 	PanelHeader,
 	Pill,
+	ProgressStages,
+	type ProgressStage,
 	Wordmark,
 	useToast,
 } from '../../../components/ui';
 
 // Same auto-batch defaults used elsewhere in the panel — keeps cost
-// predictable for the demo. The matrix endpoint hands us 12 variants
-// when the contract is rich enough; we cap parallel BU sessions at 5
-// to stay inside the BU Cloud free-tier concurrency limit.
-const APPROVE_VARIANT_COUNT = 12;
+// predictable for the demo. The matrix endpoint accepts count ∈
+// {5, 10, 20} only (Zod-validated server-side); 10 is the sweet spot
+// for the senior-QA flow because the V2 matrix-gen distributes them
+// across all 5 modes (verify/edge/stress/adversarial/invariant).
+// Parallel BU sessions capped at 5 to stay inside the BU Cloud
+// free-tier concurrency limit.
+const APPROVE_VARIANT_COUNT: 5 | 10 | 20 = 10;
 const APPROVE_PARALLELISM = 5;
 
 type ApprovePhase = 'idle' | 'matrix-gen' | 'batch-start' | 'failed';
+
+// Rotating "what the AI is thinking about right now" hints surfaced
+// during the matrix-gen wait. Each takes ~5-10s of the ~60-180s
+// matrix-gen call so the user gets a steady stream of detail. The
+// last hint sticks until the model returns. Mirrors the same "AI
+// works in the open" principle the Compiling screen uses (UX §1).
+const MATRIX_GEN_HINTS = [
+	'Reading the Feature Contract…',
+	'Asking gpt-5.4 (high reasoning) to plan a 5-mode test matrix…',
+	'Generating verify variants — happy paths with realistic data',
+	'Generating edge variants — boundaries + near-miss values',
+	'Generating stress variants — repeated/heavy-load inputs',
+	'Generating adversarial variants — hostile payloads expected to be REJECTED',
+	'Generating invariant variants — properties that must always hold',
+	'Wiring deterministic assertions to each variant…',
+	'Almost there — gpt-5.4 reasoning takes 2-5 min for rich features…',
+];
+
+const BATCH_START_HINTS = [
+	'Allocating BU Cloud browser sessions…',
+	'Decrypting cookies + UA / viewport / locale fingerprint…',
+	'Spinning up parallel cloud browsers (max 5 concurrent)…',
+];
 
 export function ContractReview() {
 	const mode = useAppState((s) => s.mode);
@@ -47,6 +75,31 @@ export function ContractReview() {
 	const [loadErr, setLoadErr] = useState<string>('');
 	const [phase, setPhase] = useState<ApprovePhase>('idle');
 	const [openBehaviorId, setOpenBehaviorId] = useState<string | null>(null);
+	// Index into MATRIX_GEN_HINTS / BATCH_START_HINTS, advanced every
+	// ~7s while the in-flight phase is active. Reset whenever the phase
+	// changes so each phase starts at hint[0].
+	const [hintIdx, setHintIdx] = useState(0);
+	const [phaseStartedAt, setPhaseStartedAt] = useState<number | null>(null);
+
+	// Tick the hint cursor + elapsed timer while we're mid-flight. Tear
+	// down on phase change OR unmount. Step interval is 7s — slow enough
+	// to feel deliberate, fast enough that the user always has new copy
+	// to read during the 60-180s matrix-gen wait.
+	useEffect(() => {
+		if (phase !== 'matrix-gen' && phase !== 'batch-start') {
+			setHintIdx(0);
+			setPhaseStartedAt(null);
+			return;
+		}
+		setHintIdx(0);
+		setPhaseStartedAt(Date.now());
+		const hints =
+			phase === 'matrix-gen' ? MATRIX_GEN_HINTS : BATCH_START_HINTS;
+		const handle = setInterval(() => {
+			setHintIdx((i) => Math.min(i + 1, hints.length - 1));
+		}, 7000);
+		return () => clearInterval(handle);
+	}, [phase]);
 
 	useEffect(() => {
 		if (mode.kind !== 'contract_review') return;
@@ -84,7 +137,7 @@ export function ContractReview() {
 			const list = await api.listTestMatrix(mode.flowId);
 			let variantIds = list.variants.map((v) => v.id);
 			if (variantIds.length === 0) {
-				const gen = await api.generateTestMatrix(mode.flowId, APPROVE_VARIANT_COUNT as 5 | 10 | 20);
+				const gen = await api.generateTestMatrix(mode.flowId, APPROVE_VARIANT_COUNT);
 				variantIds = gen.variants.map((v) => v.id);
 			}
 			if (variantIds.length === 0) {
@@ -334,6 +387,14 @@ export function ContractReview() {
 				</section>
 			)}
 
+			{(phase === 'matrix-gen' || phase === 'batch-start') && (
+				<ApproveInFlight
+					phase={phase}
+					hintIdx={hintIdx}
+					phaseStartedAt={phaseStartedAt}
+				/>
+			)}
+
 			<div className="flex-1" />
 			<PanelFooter>
 				<div className="grid grid-cols-[1fr_auto] gap-2">
@@ -362,5 +423,83 @@ export function ContractReview() {
 				</div>
 			</PanelFooter>
 		</PageShell>
+	);
+}
+
+// ───────────────────────── In-flight progress card ──────────────────────────
+
+function ApproveInFlight({
+	phase,
+	hintIdx,
+	phaseStartedAt,
+}: {
+	phase: 'matrix-gen' | 'batch-start';
+	hintIdx: number;
+	phaseStartedAt: number | null;
+}) {
+	const [tick, setTick] = useState(0);
+	useEffect(() => {
+		const h = setInterval(() => setTick((t) => t + 1), 1000);
+		return () => clearInterval(h);
+	}, []);
+	const elapsedSec = phaseStartedAt
+		? Math.floor((Date.now() - phaseStartedAt) / 1000)
+		: 0;
+	// `tick` exists only to force a re-render every second; not read.
+	void tick;
+
+	const hints = phase === 'matrix-gen' ? MATRIX_GEN_HINTS : BATCH_START_HINTS;
+	const hint = hints[Math.min(hintIdx, hints.length - 1)];
+
+	const stages: ProgressStage[] = [
+		{
+			id: 'matrix-gen',
+			label: 'Generate test plan (gpt-5.4)',
+			state:
+				phase === 'matrix-gen'
+					? 'active'
+					: phase === 'batch-start'
+						? 'done'
+						: 'pending',
+			...(phase === 'matrix-gen' && hint ? { detail: hint } : {}),
+		},
+		{
+			id: 'batch-start',
+			label: 'Spawn cloud browsers',
+			state: phase === 'batch-start' ? 'active' : 'pending',
+			...(phase === 'batch-start' && hint ? { detail: hint } : {}),
+		},
+	];
+
+	const headline =
+		phase === 'matrix-gen'
+			? 'AI senior QA is planning your test matrix'
+			: 'Allocating cloud browsers';
+
+	return (
+		<section className="px-3.5 pb-3">
+			<Card padding="md" tone="info">
+				<div className="flex items-start gap-2">
+					<div className="text-fl-cta shrink-0 fl-stage-pulse">
+						<Cpu size={18} aria-hidden="true" />
+					</div>
+					<div className="min-w-0 flex-1">
+						<div className="text-fl-black text-[12px] font-semibold leading-tight">
+							{headline}
+						</div>
+						<div className="text-fl-gray mt-1 text-[10.5px] leading-snug">
+							{hint}
+						</div>
+						<div className="border-fl-line mt-2 border-t pt-2">
+							<ProgressStages stages={stages} />
+						</div>
+						<div className="text-fl-gray mt-2 flex items-center justify-between font-mono text-[9px] uppercase tracking-wider">
+							<span>{phase === 'matrix-gen' ? 'thinking' : 'launching'}</span>
+							<span>elapsed {elapsedSec}s</span>
+						</div>
+					</div>
+				</div>
+			</Card>
+		</section>
 	);
 }
