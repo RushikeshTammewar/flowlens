@@ -270,11 +270,16 @@ export async function synthesizeFlowWithContract(
 		userContent,
 		schema: FlowSynthesisWithContractOutputSchema,
 		schemaName: 'FlowSynthesisWithContract',
-		// Roughly +400 tokens for the contract block on top of the V1
-		// budget. Leaves headroom for ~6 behaviors / ~10 inputs / ~5
-		// invariants — well above the practical cap a senior QA would
-		// extract from a single feature recording.
-		maxOutputTokens: 1400,
+		// 4000-token cap. The flow doc itself is ~600 tokens (name +
+		// description + pre/postconditions + fragility hints +
+		// stepRevisions). The contract block adds another ~1000-2500
+		// tokens depending on behavior count (each Given/When/Then with
+		// observableOutcome runs ~150-200 tokens). 1400 was enough for
+		// 3-5 behaviors but truncated mid-JSON on richer flows
+		// ("Could not parse response content as the length limit was
+		// reached"). 4000 gives ~10 behaviors of headroom while keeping
+		// per-call cost on gpt-5.4-mini under $0.02.
+		maxOutputTokens: 4000,
 	});
 
 	const c = result.value.featureContract;
