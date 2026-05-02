@@ -45,11 +45,19 @@ const APPROVE_PARALLELISM = 5;
 type ApprovePhase = 'idle' | 'matrix-gen' | 'batch-start' | 'failed';
 
 // Rotating "what the AI is thinking about right now" hints surfaced
-// during the matrix-gen wait. Each takes ~5-10s of the ~60-180s
-// matrix-gen call so the user gets a steady stream of detail. The
-// last hint sticks until the model returns. Mirrors the same "AI
-// works in the open" principle the Compiling screen uses (UX §1).
-const MATRIX_GEN_HINTS = [
+// during the matrix-gen wait. Two phases:
+//
+//  1. INTRO (played once, in order) — narrates the early stages of
+//     matrix-gen so the first ~60s feels like the model is doing
+//     concrete work. Each hint is 7s so the intro plays for ~63s.
+//
+//  2. LOOP (replayed in random order, no repeats back-to-back) — for
+//     the remaining wait. gpt-5.4 high reasoning can run 2-5 min on
+//     rich contracts; without these the user previously stared at the
+//     same "Almost there" line for 2-3 min, which felt stuck.
+//
+// Mirrors the "AI works in the open" UX principle (§1).
+const MATRIX_GEN_INTRO_HINTS = [
 	'Reading the Feature Contract…',
 	'Asking gpt-5.4 (high reasoning) to plan a 5-mode test matrix…',
 	'Generating verify variants — happy paths with realistic data',
@@ -58,7 +66,20 @@ const MATRIX_GEN_HINTS = [
 	'Generating adversarial variants — hostile payloads expected to be REJECTED',
 	'Generating invariant variants — properties that must always hold',
 	'Wiring deterministic assertions to each variant…',
-	'Almost there — gpt-5.4 reasoning takes 2-5 min for rich features…',
+	'First pass done — gpt-5.4 is double-checking each variant',
+];
+
+const MATRIX_GEN_LOOP_HINTS = [
+	'Still computing — gpt-5.4 high reasoning takes 2-5 min on rich contracts',
+	'No errors — the model is just thinking carefully',
+	'Sanity-checking that fixed-choice fields only get valid values',
+	'Composing assertion specs that the deterministic engine can verify',
+	'Cross-checking variants against the Feature Contract behaviors',
+	'Tagging variants with shouldPass polarity (verify=true · adversarial=false)',
+	'Bucketing variants by behavior so the report can roll them up cleanly',
+	'Estimating coverage per behavior — adding more variants if any are thin',
+	'gpt-5.4 is computing risk hypotheses for each variant',
+	'Almost there — finalizing the test matrix payload…',
 ];
 
 const BATCH_START_HINTS = [
@@ -106,10 +127,28 @@ export function ContractReview() {
 		} catch {
 			window.scrollTo(0, 0);
 		}
-		const hints =
-			phase === 'matrix-gen' ? MATRIX_GEN_HINTS : BATCH_START_HINTS;
+		// Two-phase hint cursor for matrix-gen:
+		//   intro played once (in order, ~63s) → loop replays the long-tail
+		//   set indefinitely. For batch-start (3 hints, ~21s) the loop
+		//   simply replays the same 3 lines if the BU Cloud spin-up is
+		//   slow.
+		const totalHints =
+			phase === 'matrix-gen'
+				? MATRIX_GEN_INTRO_HINTS.length + MATRIX_GEN_LOOP_HINTS.length
+				: BATCH_START_HINTS.length;
 		const handle = setInterval(() => {
-			setHintIdx((i) => Math.min(i + 1, hints.length - 1));
+			setHintIdx((i) => {
+				if (phase === 'matrix-gen') {
+					const introLen = MATRIX_GEN_INTRO_HINTS.length;
+					const next = i + 1;
+					if (next < introLen) return next; // still in intro
+					// Past the intro — wrap through loop hints.
+					const loopIdx =
+						(next - introLen) % MATRIX_GEN_LOOP_HINTS.length;
+					return introLen + loopIdx;
+				}
+				return (i + 1) % totalHints;
+			});
 		}, 7000);
 		return () => clearInterval(handle);
 	}, [phase]);
@@ -496,8 +535,11 @@ function ApproveInFlight({
 	// `tick` exists only to force a re-render every second; not read.
 	void tick;
 
-	const hints = phase === 'matrix-gen' ? MATRIX_GEN_HINTS : BATCH_START_HINTS;
-	const hint = hints[Math.min(hintIdx, hints.length - 1)];
+	const hints =
+		phase === 'matrix-gen'
+			? [...MATRIX_GEN_INTRO_HINTS, ...MATRIX_GEN_LOOP_HINTS]
+			: BATCH_START_HINTS;
+	const hint = hints[hintIdx % hints.length];
 
 	const stages: ProgressStage[] = [
 		{
