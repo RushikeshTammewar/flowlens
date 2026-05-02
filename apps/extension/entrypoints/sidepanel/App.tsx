@@ -172,9 +172,34 @@ export function App() {
 				applyActiveState(next, userEmail);
 			} else if (cur.kind === 'recording') {
 				// Active session cleared by background (stop_recording finished).
-				// Don't override mid-stop transitions like 'compiling'; only
-				// reset if we were actually still on the Recording screen.
-				setMode({ kind: 'idle', userEmail: cur.userEmail });
+				//
+				// RACE: when the user clicks Stop, the order is:
+				//   (1) Recording.tsx awaits chrome.runtime.sendMessage('stop_recording')
+				//   (2) Background SW clears the session storage entry  ← fires onStorageChanged
+				//   (3) Background SW returns the finish response
+				//   (4) Recording.tsx receives response, setMode('compiling')
+				//
+				// If we synchronously setMode('idle') at (2), the user sees
+				// the Idle screen flash for the 200-2000ms gap until step
+				// (4). UX bug: "some flowlens page for brief 2-3 seconds"
+				// between Stop and Compiling.
+				//
+				// Fix: defer the idle-reset by 2s. If during that window
+				// the explicit Stop handler in Recording.tsx (or any other
+				// path) transitions away from 'recording', skip the
+				// reset. The deferred reset only fires for ABANDONED
+				// recordings — e.g. tab closed, SW killed externally.
+				const armedAt = Date.now();
+				setTimeout(() => {
+					const now = useAppState.getState().mode;
+					if (now.kind !== 'recording') return; // someone else moved on
+					console.info(
+						'[Flowlens] storage cleared with no follow-up transition after',
+						Date.now() - armedAt,
+						'ms — falling back to Idle (assumed abandoned recording)',
+					);
+					setMode({ kind: 'idle', userEmail: now.userEmail });
+				}, 2000);
 			}
 		};
 		chrome.storage.onChanged.addListener(onStorageChanged);
