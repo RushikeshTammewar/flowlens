@@ -55,6 +55,13 @@ const AUTO_MATRIX_COUNT = 5;
 
 type AutoPhase = 'idle' | 'matrix-gen' | 'batch-start' | 'failed';
 
+interface DecodedStep {
+	stepIndex: number;
+	actionType: string;
+	intent: string;
+	isCritical: boolean;
+}
+
 export function Compiling() {
 	const mode = useAppState((s) => s.mode);
 	const setMode = useAppState((s) => s.setMode);
@@ -63,6 +70,10 @@ export function Compiling() {
 	const [rawStage, setRawStage] = useState<string>('queued');
 	const [detail, setDetail] = useState<string>('');
 	const [autoPhase, setAutoPhase] = useState<AutoPhase>('idle');
+	// Phase 4 / UX §1 — live "what the AI just decoded" feed surfaced
+	// from the narrate-stage rolling buffer. Empty until first step
+	// finishes narrating; cleared once we move past narrate.
+	const [decodedSteps, setDecodedSteps] = useState<DecodedStep[]>([]);
 	// What the AI thinks the user is testing — fetched once compile is done
 	// so the user can verify (and watch) during the matrix-gen wait
 	// (~60-120s on gpt-5.4 reasoning-high). Without this the user just
@@ -183,6 +194,14 @@ export function Compiling() {
 				setPct(res.compile.pct);
 				setRawStage(res.compile.stage);
 				setDetail(res.compile.detail ?? '');
+				// Phase 4 — live decoded-steps feed. Only paint while the
+				// narrate stage is active; clear when we move on so the
+				// synthesize/matrix screens don't show stale narrate detail.
+				if (res.compile.stage === 'narrate' && res.compile.recentNarrations) {
+					setDecodedSteps(res.compile.recentNarrations);
+				} else if (res.compile.stage !== 'narrate' && decodedSteps.length > 0) {
+					setDecodedSteps([]);
+				}
 				if (res.flowStatus === 'ready' && res.compile.stage === 'done') {
 					void startAutoMatrix(mode.flowId, mode.userEmail);
 					return;
@@ -205,6 +224,11 @@ export function Compiling() {
 			cancelled = true;
 			clearInterval(handle);
 		};
+		// `decodedSteps` is intentionally NOT in the dep array — we read
+		// `decodedSteps.length` inside `tick` only as a clear-once guard,
+		// and re-creating the interval every time the buffer mutates would
+		// reset the 1s polling cadence on every server-side update.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [mode, setMode, toast]);
 
 	if (mode.kind !== 'compiling') return null;
@@ -275,6 +299,43 @@ export function Compiling() {
 					</div>
 				</Card>
 			</section>
+
+			{decodedSteps.length > 0 && rawStage === 'narrate' && (
+				<section className="px-3.5 pt-3">
+					<Card padding="sm" tone="info">
+						<div className="text-fl-gray font-mono text-[9px] uppercase tracking-wider">
+							What the AI just decoded
+						</div>
+						<ol className="mt-1.5 space-y-1">
+							{decodedSteps.map((s, i) => (
+								<li
+									key={`${s.stepIndex}-${i}`}
+									className="flex items-baseline gap-1.5 text-[11px] leading-snug"
+								>
+									<span className="text-fl-gray font-mono text-[9px] tabular-nums shrink-0 w-5">
+										{String(s.stepIndex + 1).padStart(2, '0')}
+									</span>
+									<span className="text-fl-black flex-1">
+										<span className="text-fl-gray text-[10px] uppercase tracking-wider mr-1">
+											{s.actionType}
+										</span>
+										{s.intent}
+										{s.isCritical && (
+											<span className="text-fl-cta ml-1 text-[9px] uppercase tracking-wider">
+												·critical
+											</span>
+										)}
+									</span>
+								</li>
+							))}
+						</ol>
+						<div className="text-fl-gray mt-2 font-mono text-[9px] uppercase tracking-wider">
+							{decodedSteps.length} step{decodedSteps.length === 1 ? '' : 's'} so far · live from
+							gpt-5.4-mini vision
+						</div>
+					</Card>
+				</section>
+			)}
 
 			{(autoPhase === 'matrix-gen' || autoPhase === 'batch-start') && flowPreview && (
 				<section className="px-3.5 pt-3">

@@ -24,6 +24,7 @@ import { eq, inArray } from 'drizzle-orm';
 import Link from 'next/link';
 import { db } from '@/lib/db';
 import { tryPageAuthContext } from '@/lib/auth';
+import { LiveboardClient } from './liveboard-client';
 import {
 	flows,
 	runs,
@@ -40,6 +41,7 @@ import {
 
 interface PageProps {
 	params: Promise<{ id: string; batchId: string }>;
+	searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 const MODE_ORDER = ['verify', 'edge', 'stress', 'adversarial', 'invariant'] as const;
@@ -52,8 +54,10 @@ const MODE_LABEL: Record<Mode, string> = {
 	invariant: 'Inv',
 };
 
-export default async function RunReportPage({ params }: PageProps) {
+export default async function RunReportPage({ params, searchParams }: PageProps) {
 	const { id: flowId, batchId } = await params;
+	const sp = await searchParams;
+	const liveParam = sp.live === '1';
 
 	const auth = await tryPageAuthContext();
 	if (!auth) {
@@ -135,9 +139,19 @@ export default async function RunReportPage({ params }: PageProps) {
 	const finishedAt = batch.finishedAt ? new Date(batch.finishedAt) : null;
 	const durationMs = startedAt && finishedAt ? finishedAt.getTime() - startedAt.getTime() : null;
 
+	// v3.1 — page has two render modes (LLD §6.7). When ?live=1 AND
+	// the batch is still in flight, show the Liveboard subtree (multi-
+	// iframe grid + status header). When the batch has terminated OR
+	// ?live=1 isn't set, show the Run Report (current behavior).
+	// Self-promotion happens client-side via meta-refresh: when the
+	// Liveboard's polling sees batch.status terminal, it strips ?live
+	// and reloads to land on the Run Report layout.
+	const isLiveMode =
+		liveParam && (batch.status === 'queued' || batch.status === 'running');
+
 	return (
 		<main className="min-h-screen bg-fl-white text-fl-black">
-			<div className="mx-auto max-w-5xl px-6 py-10">
+			<div className="mx-auto max-w-7xl px-6 py-10">
 				<div className="text-fl-gray mb-4 text-xs">
 					<Link href="/" className="hover:underline">
 						← Flowlens
@@ -146,7 +160,20 @@ export default async function RunReportPage({ params }: PageProps) {
 				</div>
 
 				<header className="mb-6 border-b border-fl-light pb-6">
-					<h1 className="text-3xl font-semibold tracking-tight">{flow.name}</h1>
+					<div className="flex items-baseline gap-3">
+						<h1 className="text-3xl font-semibold tracking-tight">{flow.name}</h1>
+						{isLiveMode && (
+							<span className="inline-flex items-center gap-1.5 bg-fl-amber/15 border border-fl-amber/40 px-2 py-1 text-xs font-mono uppercase tracking-wider text-fl-amber">
+								<span className="bg-fl-amber inline-block h-1.5 w-1.5 rounded-full animate-pulse" />
+								LIVE BATCH
+							</span>
+						)}
+						{!isLiveMode && batch.status === 'completed' && (
+							<span className="bg-fl-green text-fl-white inline-flex items-center px-2 py-1 text-xs font-mono uppercase tracking-wider">
+								COMPLETED
+							</span>
+						)}
+					</div>
 					<p className="text-fl-gray mt-1 text-sm">
 						Run #{batch.id.slice(0, 8)} ·{' '}
 						{startedAt ? startedAt.toLocaleString() : 'pending'}
@@ -156,6 +183,23 @@ export default async function RunReportPage({ params }: PageProps) {
 					</p>
 				</header>
 
+				{isLiveMode && (
+					<LiveboardClient
+						batchId={batch.id}
+						flowId={flow.id}
+						initialVariants={variantsView.map((v) => ({
+							id: v.variant.id,
+							name: v.variant.name,
+							mode: v.variant.mode ?? null,
+							family: v.variant.family,
+							status: v.run?.status ?? 'queued',
+							liveUrl: v.run?.liveUrl ?? null,
+						}))}
+					/>
+				)}
+
+				{!isLiveMode && (
+					<>
 				<section className="mb-8">
 					<h2 className="text-fl-gray mb-3 text-xs uppercase tracking-wider">
 						Two-axis verdict
@@ -264,6 +308,9 @@ export default async function RunReportPage({ params }: PageProps) {
 							</details>
 						</div>
 					</section>
+				)}
+
+					</>
 				)}
 
 				<footer className="text-fl-gray border-t border-fl-light pt-4 text-xs">

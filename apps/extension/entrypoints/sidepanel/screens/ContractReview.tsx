@@ -17,6 +17,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Cookie, Cpu, Lock, RefreshCw, ShieldCheck } from 'lucide-react';
 import { useAppState } from '../../../lib/state';
+import { APP_CONFIG } from '../../../app.config';
 import { api, type FeatureContractView, type FlowWithContractView } from '../../../lib/api-client';
 import {
 	Button,
@@ -148,6 +149,26 @@ export function ContractReview() {
 				variantIds: variantIds.slice(0, APPROVE_VARIANT_COUNT),
 				parallelism: APPROVE_PARALLELISM,
 			});
+
+			// v3.1 — auto-open the Web Liveboard in a new browser tab so
+			// the user gets a wide-screen view of the multi-variant batch
+			// without having to hunt for a button. `active: false` keeps
+			// focus on the side panel + the recorded site; the user
+			// switches to the Liveboard tab when they want it. Failure
+			// here is non-fatal — the side panel's Open Liveboard ↗ CTA
+			// in MatrixRunning is the manual escape hatch.
+			// LLD §6.7 + UX §8.
+			const liveboardUrl = `${APP_CONFIG.flowlensWebUrl}/app/features/${mode.flowId}/runs/${batch.batchId}?live=1`;
+			try {
+				await chrome.tabs.create({ url: liveboardUrl, active: false });
+				console.info('[phase4:ui] opened Liveboard tab', liveboardUrl);
+			} catch (err) {
+				console.warn(
+					'[phase4:ui] auto-open Liveboard failed (non-fatal):',
+					(err as Error).message,
+				);
+			}
+
 			setMode({
 				kind: 'matrix_running',
 				userEmail: mode.userEmail,
@@ -193,18 +214,41 @@ export function ContractReview() {
 				<PanelHeader>
 					<div className="flex min-w-0 items-center gap-2">
 						<Wordmark />
-						<Pill size="xs" variant="success" dot>
-							contract ready
+						<Pill
+							size="xs"
+							variant={
+								phase === 'matrix-gen' || phase === 'batch-start' ? 'warn' : 'success'
+							}
+							dot
+						>
+							{phase === 'matrix-gen'
+								? 'thinking'
+								: phase === 'batch-start'
+									? 'launching'
+									: 'contract ready'}
 						</Pill>
 					</div>
 				</PanelHeader>
 			}
 		>
+			{/* In-flight panel rendered FIRST so it's the very next thing
+			   below the header. The contract list below stays scrollable
+			   for reference but the user no longer has to scroll past it
+			   to see what the AI is doing. */}
+			{(phase === 'matrix-gen' || phase === 'batch-start') && (
+				<ApproveInFlight
+					phase={phase}
+					hintIdx={hintIdx}
+					phaseStartedAt={phaseStartedAt}
+				/>
+			)}
+
 			<section className="px-4 py-4">
 				<button
 					type="button"
 					onClick={reRecord}
 					className="text-fl-gray hover:text-fl-black mb-2 flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider"
+					disabled={phase === 'matrix-gen' || phase === 'batch-start'}
 				>
 					← Back
 				</button>
@@ -387,14 +431,6 @@ export function ContractReview() {
 				</section>
 			)}
 
-			{(phase === 'matrix-gen' || phase === 'batch-start') && (
-				<ApproveInFlight
-					phase={phase}
-					hintIdx={hintIdx}
-					phaseStartedAt={phaseStartedAt}
-				/>
-			)}
-
 			<div className="flex-1" />
 			<PanelFooter>
 				<div className="grid grid-cols-[1fr_auto] gap-2">
@@ -476,30 +512,44 @@ function ApproveInFlight({
 			? 'AI senior QA is planning your test matrix'
 			: 'Allocating cloud browsers';
 
+	// gpt-5.4 high reasoning typically lands 2-5min on a 3-5 behavior
+	// contract; rich contracts (8+ behaviors) can push 10min. Pure
+	// estimate — surfaces honestly so the user knows the wait is real.
+	const etaCopy =
+		phase === 'matrix-gen'
+			? elapsedSec < 60
+				? '⏱  Typically 2-5 min · gpt-5.4 reasoning is slow but produces sharper variants'
+				: elapsedSec < 180
+					? '⏱  Most contracts finish in 2-5 min · still going'
+					: elapsedSec < 360
+						? '⏱  This is a complex contract — up to 10 min is normal'
+						: '⏱  Taking longer than usual — but the model is still computing (no error)'
+			: '⏱  Cloud browsers usually spin up in 5-15 sec';
+
 	return (
-		<section className="px-3.5 pb-3">
-			<Card padding="md" tone="info">
-				<div className="flex items-start gap-2">
-					<div className="text-fl-cta shrink-0 fl-stage-pulse">
-						<Cpu size={18} aria-hidden="true" />
+		<section className="border-fl-line border-y-2 border-fl-cta/40 bg-fl-soft/60 px-3.5 py-3">
+			<div className="flex items-start gap-2">
+				<div className="text-fl-cta shrink-0 fl-stage-pulse">
+					<Cpu size={20} aria-hidden="true" />
+				</div>
+				<div className="min-w-0 flex-1">
+					<div className="text-fl-black text-[13px] font-semibold leading-tight">
+						{headline}
 					</div>
-					<div className="min-w-0 flex-1">
-						<div className="text-fl-black text-[12px] font-semibold leading-tight">
-							{headline}
-						</div>
-						<div className="text-fl-gray mt-1 text-[10.5px] leading-snug">
-							{hint}
-						</div>
-						<div className="border-fl-line mt-2 border-t pt-2">
-							<ProgressStages stages={stages} />
-						</div>
-						<div className="text-fl-gray mt-2 flex items-center justify-between font-mono text-[9px] uppercase tracking-wider">
-							<span>{phase === 'matrix-gen' ? 'thinking' : 'launching'}</span>
-							<span>elapsed {elapsedSec}s</span>
-						</div>
+					<div className="text-fl-black mt-1 text-[11px] leading-snug font-medium">
+						{hint}
+					</div>
+					<div className="border-fl-line mt-2 border-t pt-2">
+						<ProgressStages stages={stages} />
+					</div>
+					<div className="mt-2 flex items-center justify-between gap-2">
+						<span className="text-fl-gray text-[10px] leading-tight">{etaCopy}</span>
+						<span className="text-fl-gray font-mono text-[10px] tabular-nums shrink-0">
+							{elapsedSec}s
+						</span>
 					</div>
 				</div>
-			</Card>
+			</div>
 		</section>
 	);
 }

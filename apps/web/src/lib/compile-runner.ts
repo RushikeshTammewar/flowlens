@@ -20,6 +20,14 @@ export interface CompileStatus {
 	detail?: string;
 	error?: string;
 	updatedAt: number;
+	/**
+	 * Phase 4 / UX §1 — rolling buffer of the most recently decoded
+	 * narrate-stage steps, surfaced by the compile pipeline. The
+	 * extension's Compiling screen renders this as a live "what the
+	 * AI just figured out" feed during the narrate stage. Reset (cleared)
+	 * once the pipeline moves on to synthesize.
+	 */
+	recentNarrations?: CompileProgressEvent['recentNarrations'];
 }
 
 const STATUS = new Map<string, CompileStatus>();

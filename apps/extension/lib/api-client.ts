@@ -319,7 +319,21 @@ export const api = {
 	},
 	async getCompileStatus(flowId: string): Promise<{
 		flowStatus: 'draft' | 'compiling' | 'ready' | 'archived';
-		compile: { stage: string; pct: number; detail?: string; error?: string };
+		compile: {
+			stage: string;
+			pct: number;
+			detail?: string;
+			error?: string;
+			// Phase 4 / UX §1 — live "what the AI just decoded" feed
+			// streamed during the narrate stage. Capped at 8 entries on
+			// the server. Cleared on stage transition.
+			recentNarrations?: Array<{
+				stepIndex: number;
+				actionType: string;
+				intent: string;
+				isCritical: boolean;
+			}>;
+		};
 	}> {
 		const path = `/api/flows/${flowId}/compile-status`;
 		const res = await authedFetch(path);

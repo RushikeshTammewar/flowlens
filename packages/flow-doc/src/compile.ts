@@ -25,6 +25,21 @@ export interface CompileProgressEvent {
 	pct: number; // 0..100
 	stage: 'normalize' | 'narrate' | 'synthesize' | 'siblings' | 'persist';
 	detail?: string;
+	/**
+	 * Phase 4 / UX §1 ("AI works in the open") — rolling buffer of the
+	 * MOST RECENTLY decoded steps. Set on every narrate-stage progress
+	 * tick so the side panel can render a live feed: "01 click —
+	 * Open the courses page → 02 input — Filter by Java …" while the
+	 * narrate calls are still running. Last entry is the most recent
+	 * (chronologically). Capped at 8 entries — older decodings stay
+	 * accessible after compile via flow.steps.
+	 */
+	recentNarrations?: Array<{
+		stepIndex: number;
+		actionType: string;
+		intent: string;
+		isCritical: boolean;
+	}>;
 }
 
 export type CompileProgressEmitter = (e: CompileProgressEvent) => void;
@@ -175,6 +190,14 @@ export async function compileRecording(input: CompileInput): Promise<CompileOutp
 	}
 
 	progress({ pct: 12, stage: 'narrate' });
+	// Rolling buffer of the most recently completed narrations (8 entries).
+	// Each narrate call finishes in unpredictable order under concurrency=4
+	// so we push by completion time, not stepIndex. The UI renders this
+	// list in completion order — feels like the AI is "discovering" the
+	// flow as it works through the screenshots.
+	const RECENT_BUFFER_LIMIT = 8;
+	const recentNarrations: NonNullable<CompileProgressEvent['recentNarrations']> = [];
+	let completed = 0;
 	const narrations = await pMap(
 		normalized,
 		async (action, i) => {
@@ -205,10 +228,25 @@ export async function compileRecording(input: CompileInput): Promise<CompileOutp
 			});
 			totalTokens += res.usage.totalTokens;
 			totalCostUsdMicro += estimateCostUsdMicro(res.model, res.usage.promptTokens, res.usage.completionTokens);
+
+			// Push to rolling buffer + emit. The "AI works in the open"
+			// principle (UX §1) — the user sees the decoding happen live
+			// instead of staring at a counter for 30s.
+			completed += 1;
+			recentNarrations.push({
+				stepIndex: action.index,
+				actionType: action.type,
+				intent: res.value.intent,
+				isCritical: res.value.isCritical,
+			});
+			if (recentNarrations.length > RECENT_BUFFER_LIMIT) {
+				recentNarrations.shift();
+			}
 			progress({
-				pct: 12 + Math.round(((i + 1) / normalized.length) * 60),
+				pct: 12 + Math.round((completed / normalized.length) * 60),
 				stage: 'narrate',
-				detail: `step ${i + 1}/${normalized.length}`,
+				detail: `step ${completed}/${normalized.length}`,
+				recentNarrations: [...recentNarrations],
 			});
 			return { action, narration: res.value, model: res.model, tokens: res.usage.totalTokens };
 		},

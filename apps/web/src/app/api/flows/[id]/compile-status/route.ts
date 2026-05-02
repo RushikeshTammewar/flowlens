@@ -22,6 +22,11 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 			return NextResponse.json({ error: 'not found' }, { status: 404 });
 		}
 		const status = getCompileStatus(id);
+		// Phase 4 / UX §1 — pass `recentNarrations` straight through if
+		// present. Older callers (Phase 3 panels) just ignore the extra
+		// field. New `Compiling.tsx` renders it as a live decoded-steps
+		// feed so the user sees the AI working in the open during the
+		// narrate stage instead of staring at a step counter.
 		return NextResponse.json({
 			flowId: id,
 			flowStatus: flow.status,

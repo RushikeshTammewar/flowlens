@@ -153,6 +153,13 @@ export async function runCompileInline(
 					stage: e.stage,
 					pct: e.pct,
 					...(e.detail ? { detail: e.detail } : {}),
+					// Forward the rolling decoded-steps buffer when present
+					// (only the narrate stage emits it). Empty arrays from
+					// other stages clear the previous value so the UI feed
+					// doesn't ghost-render stale entries on the next stage.
+					...(e.recentNarrations
+						? { recentNarrations: e.recentNarrations }
+						: {}),
 					updatedAt: Date.now(),
 				});
 				void emitSseEvent(`flow:${input.flowId}`, {
