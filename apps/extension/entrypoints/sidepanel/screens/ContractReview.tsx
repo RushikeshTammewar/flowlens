@@ -94,6 +94,18 @@ export function ContractReview() {
 		}
 		setHintIdx(0);
 		setPhaseStartedAt(Date.now());
+		// Force the panel scroll to the top so the in-flight progress
+		// card (rendered at the top of the page) is immediately visible.
+		// Without this, a user who scrolled down to read the contract
+		// before clicking Approve sees only the THINKING pill in the
+		// header and the disabled "Generating test plan…" button at the
+		// bottom — neither obvious enough to communicate "the AI is
+		// working right now". UX bug surfaced in live testing.
+		try {
+			window.scrollTo({ top: 0, behavior: 'smooth' });
+		} catch {
+			window.scrollTo(0, 0);
+		}
 		const hints =
 			phase === 'matrix-gen' ? MATRIX_GEN_HINTS : BATCH_START_HINTS;
 		const handle = setInterval(() => {
@@ -527,7 +539,13 @@ function ApproveInFlight({
 			: '⏱  Cloud browsers usually spin up in 5-15 sec';
 
 	return (
-		<section className="border-fl-line border-y-2 border-fl-cta/40 bg-fl-soft/60 px-3.5 py-3">
+		// Sticky to the top of the panel so it stays visible no matter
+		// how far the user has scrolled into the contract behaviors /
+		// inputs / invariants. The thick top + bottom CTA-coloured
+		// borders + soft background pop the card off the otherwise-
+		// monochrome panel. z-20 sits above the contract sections but
+		// below any future modal / lightbox.
+		<section className="sticky top-0 z-20 border-fl-line border-y-2 border-fl-cta/40 bg-fl-white px-3.5 py-3 shadow-[0_4px_12px_rgba(15,15,15,0.08)]">
 			<div className="flex items-start gap-2">
 				<div className="text-fl-cta shrink-0 fl-stage-pulse">
 					<Cpu size={20} aria-hidden="true" />
