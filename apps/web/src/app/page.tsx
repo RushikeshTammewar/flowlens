@@ -1,5 +1,7 @@
-const EXTENSION_ZIP_URL =
-	'https://klaifiooxmmmqygg.public.blob.vercel-storage.com/extension/flowlens-extension.zip';
+// Short branded URL. next.config.ts redirects this to the actual Vercel
+// Blob URL. The redirect runs at the edge, so the user just sees a clean
+// download URL in the browser address bar before the file starts.
+const EXTENSION_ZIP_URL = '/extension.zip';
 
 export default function Home() {
 	return (
