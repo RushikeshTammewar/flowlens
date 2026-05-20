@@ -189,12 +189,94 @@ def _describe_outcome(kind: str, passed: bool, evidence: dict[str, Any]) -> str:
 # ──────────────────────── deterministic handlers ───────────────────────────
 
 
+_NON_SUBSTANTIVE_URL_PREFIXES = ("about:", "chrome:", "chrome-error:", "edge:", "view-source:")
+
+
+async def _resolve_substantive_cdp_session(session: Any) -> Any:
+    """Return a CDP session bound to a real http(s) page target.
+
+    Background: the `target_id=None` path resolves to whichever target
+    browser-use thinks is "agent focus". When a recorded step opened a
+    new tab (anchor with `target=_blank`, e.g. a "View" link in a results
+    table), focus may settle on the new tab — which is initially `about:blank`
+    or a chrome:// surface. The variant-level assertion engine then asks
+    `location.href` and gets back `about:blank`, which makes a perfectly
+    valid url_matches assertion fail for the wrong reason (and dom_*
+    assertions fail because the DOM is empty).
+
+    Heuristic: if the focus target's URL is non-substantive, scan all
+    page targets and switch to the first http(s) one. We DON'T mutate
+    browser-use's agent focus — we just bind a CDP session to that
+    target_id for the assertion's lifetime. Falls back silently to the
+    focus session when nothing better exists.
+    """
+    cdp_session = await session.get_or_create_cdp_session(target_id=None)
+    try:
+        info_res = await cdp_session.cdp_client.send.Target.getTargetInfo(
+            session_id=cdp_session.session_id,
+        )
+        info = (info_res or {}).get("targetInfo") or {}
+        focus_url = info.get("url") or ""
+    except Exception:
+        focus_url = ""
+
+    if isinstance(focus_url, str) and focus_url.startswith(("http://", "https://")):
+        return cdp_session
+
+    # Focus target is non-substantive — find a real page target.
+    try:
+        targets_res = await cdp_session.cdp_client.send.Target.getTargets()
+        targets = (targets_res or {}).get("targetInfos", []) or []
+    except Exception:
+        targets = []
+
+    page_targets = [
+        t
+        for t in targets
+        if t.get("type") == "page"
+        and isinstance(t.get("url"), str)
+        and t["url"].startswith(("http://", "https://"))
+        and not any(
+            t["url"].startswith(prefix) for prefix in _NON_SUBSTANTIVE_URL_PREFIXES
+        )
+    ]
+    if not page_targets:
+        return cdp_session
+
+    # Prefer the target that was created first — almost always the
+    # original landing tab. Newly-opened popup/tab targets sort after.
+    page_targets.sort(key=lambda t: t.get("attached", False), reverse=True)
+    chosen = page_targets[0]
+    try:
+        log.info(
+            "[phase4:assertion]",
+            note="rebinding to substantive target",
+            focusUrl=focus_url[:120],
+            chosenUrl=str(chosen.get("url"))[:120],
+            chosenTargetId=str(chosen.get("targetId"))[:80],
+        )
+        return await session.get_or_create_cdp_session(
+            target_id=chosen["targetId"], focus=False
+        )
+    except Exception as e:
+        log.warning(
+            "[phase4:assertion]",
+            note="rebind failed; staying on focus session",
+            error=str(e)[:160],
+        )
+        return cdp_session
+
+
 async def _runtime_evaluate(session: Any, expression: str) -> Any:
     """Run a JS expression on the active CDP target. Mirrors the helper
     in simple_replay._evaluate but kept private so this module is
     importable without dragging in simple_replay's typing.
+
+    Resolves to a substantive (http/https) page target when the active
+    target is `about:blank` or a chrome:// surface — see
+    `_resolve_substantive_cdp_session` for the rationale.
     """
-    cdp_session = await session.get_or_create_cdp_session(target_id=None)
+    cdp_session = await _resolve_substantive_cdp_session(session)
     res = await cdp_session.cdp_client.send.Runtime.evaluate(
         params={
             "expression": expression,

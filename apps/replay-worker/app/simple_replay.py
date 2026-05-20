@@ -177,13 +177,72 @@ async def _resolve_element_then(session: Any, step: FlowStep, action_js: str) ->
 
 
 async def _click(session: Any, step: FlowStep) -> Any:
-    return await _resolve_element_then(
-        session,
-        step,
-        "el.scrollIntoView({block:'center'});"
-        "el.focus && el.focus();"
-        "el.click();",
+    """Click the resolved element.
+
+    Senior-QA fix (May 2026): when the step has a `recordedValue` AND the
+    resolved element is a radio/checkbox group member, RETARGET the click
+    to the sibling input (same `name`) whose `value` matches recordedValue.
+    Without this, variant overrides like `{stepIndex: 4, value: "Python"}`
+    silently no-op for radios — the recorded selector still points at the
+    originally-clicked radio (e.g. "Java"), so we'd just re-click Java and
+    the assertion would correctly flag "Java still present".
+
+    The same retargeting applies when the recorded element is the LABEL of
+    a radio/checkbox (some recorders capture the label's bounding box).
+    We follow the `for=` attribute (or descendant `<input>`) to reach the
+    real input before scanning the group.
+    """
+    value_js = _js_str(step.recordedValue) if step.recordedValue is not None else "null"
+    js = (
+        f"let v = {value_js};"
+        # The wrapping IIFE in _resolve_element_then declares `const el`.
+        # We work with a local `target_el` so we can redirect through a
+        # label or to a sibling radio without clashing with that const.
+        "let target_el = el;"
+        # If the recorder captured the label, jump to its associated input
+        # so the radio-group retargeting below has a real input to scan
+        # siblings of.
+        "if (target_el.tagName === 'LABEL') {"
+        "  const forId = target_el.getAttribute('for');"
+        "  const associated = forId ? document.getElementById(forId) : target_el.querySelector('input');"
+        "  if (associated) target_el = associated;"
+        "}"
+        # Radio/checkbox retarget by value when the variant supplied one.
+        # Group is identified by `name` (radios only meaningfully share a
+        # name; checkboxes use it too for grouped semantics). Falls back
+        # to the resolver-clicked element when no sibling matches — that
+        # preserves V1 behavior when recordedValue is null or the value
+        # doesn't correspond to any visible option.
+        "if (v != null && target_el.tagName === 'INPUT' && (target_el.type === 'radio' || target_el.type === 'checkbox')) {"
+        "  const root = target_el.form || document;"
+        "  const groupName = target_el.name || '';"
+        "  const sibs = groupName"
+        "    ? root.querySelectorAll('input[name=' + JSON.stringify(groupName) + ']')"
+        "    : [];"
+        "  let match = null;"
+        "  const needle = String(v).trim().toLowerCase();"
+        "  for (const s of sibs) {"
+        "    const sv = String(s.value || '').trim().toLowerCase();"
+        "    if (sv === needle) { match = s; break; }"
+        "  }"
+        # Fallback: match by associated label's text (when value attribute
+        # is empty / mismatched). Scans labels that point at this group's
+        # inputs and accepts case-insensitive substring match.
+        "  if (!match) {"
+        "    for (const s of sibs) {"
+        "      const lbl = (s.id ? document.querySelector('label[for=' + JSON.stringify(s.id) + ']') : null)"
+        "        || s.closest('label');"
+        "      const t = lbl ? (lbl.innerText || lbl.textContent || '').trim().toLowerCase() : '';"
+        "      if (t && t.includes(needle)) { match = s; break; }"
+        "    }"
+        "  }"
+        "  if (match) target_el = match;"
+        "}"
+        "target_el.scrollIntoView({block:'center'});"
+        "target_el.focus && target_el.focus();"
+        "target_el.click();"
     )
+    return await _resolve_element_then(session, step, js)
 
 
 async def _input(session: Any, step: FlowStep, value: str) -> Any:
