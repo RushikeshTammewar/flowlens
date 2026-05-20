@@ -1,0 +1,23 @@
+@import 'tailwindcss';
+@import '@flowlens/design-tokens/tokens.css';
+
+@layer base {
+	html,
+	body {
+		font-family: var(--font-sans);
+		background: var(--color-fl-white);
+		color: var(--color-fl-black);
+		font-size: 14px;
+		line-height: 1.6;
+	}
+
+	* {
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	::selection {
+		background: var(--color-fl-black);
+		color: var(--color-fl-white);
+	}
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@flowlens/llm-config",
+  "version": "0.0.0",
+  "description": "Centralized LLM model selection for Flowlens v3 (importable by web + flow-doc + replay-engine).",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'lint OK'"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "openai": "^6.34.0",
+    "zod": "^3.25.0"
+  }
+}

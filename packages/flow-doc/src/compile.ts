@@ -1,0 +1,414 @@
+/**
+ * Recording → Flow Document compile pipeline. Called from
+ * `apps/web/src/app/api/recordings/[id]/finish/route.ts` (initially as a
+ * fire-and-forget Promise; Vercel Workflow migration is tracked in LLD §5).
+ *
+ * Stages (per LLD §5):
+ *   1. Normalize: drop noise (cookie banners, scroll-only steps).
+ *   2. Narrate: parallel ×4 LLM call per remaining action (vision).
+ *   3. Synthesize: single gpt-4.1 call producing the Flow document.
+ *   4. Sibling generation: optional gpt-4.1-mini call, capped at 3 flows.
+ *
+ * Each stage emits a `compile_progress` SSE-shaped event via `progress.emit`.
+ */
+import type { FeatureContract, FlowStep, RecordedAction } from '@flowlens/schema';
+import { narrateStep, type NarrationOutput } from './narrate-step';
+import {
+	synthesizeFlow,
+	synthesizeFlowWithContract,
+	type FlowSynthesisOutput,
+} from './synthesize-flow';
+import { suggestSiblingFlows, type SiblingFlowsOutput } from './sibling-flows';
+import { classifySensitive } from './sensitive-classify';
+
+export interface CompileProgressEvent {
+	pct: number; // 0..100
+	stage: 'normalize' | 'narrate' | 'synthesize' | 'siblings' | 'persist';
+	detail?: string;
+	/**
+	 * Phase 4 / UX §1 ("AI works in the open") — rolling buffer of the
+	 * MOST RECENTLY decoded steps. Set on every narrate-stage progress
+	 * tick so the side panel can render a live feed: "01 click —
+	 * Open the courses page → 02 input — Filter by Java …" while the
+	 * narrate calls are still running. Last entry is the most recent
+	 * (chronologically). Capped at 8 entries — older decodings stay
+	 * accessible after compile via flow.steps.
+	 */
+	recentNarrations?: Array<{
+		stepIndex: number;
+		actionType: string;
+		intent: string;
+		isCritical: boolean;
+	}>;
+}
+
+export type CompileProgressEmitter = (e: CompileProgressEvent) => void;
+
+export interface CompileInput {
+	flowId: string;
+	siteOrigin: string;
+	siteModelText: string | null;
+	actions: RecordedAction[];
+	/** Resolves a per-action screenshot to an https:// URL OpenAI vision can fetch. */
+	resolveScreenshotUrl: (input: { actionIndex: number }) => Promise<string | null>;
+	progress: CompileProgressEmitter;
+	/** Concurrency for narrate-step calls. Default 4. */
+	narrateConcurrency?: number;
+	/** When true, skip the sibling-flow LLM call (e.g. on re-compile). */
+	skipSiblings?: boolean;
+	/**
+	 * Page-wide control inventory captured at recording stop. Forwarded to
+	 * synthesize + matrix-gen so the AI knows about controls the user did
+	 * NOT touch (e.g. a min-enrollments filter that was preset before
+	 * recording started).
+	 */
+	pageControls?: import('@flowlens/schema').PageControlSummary[] | null;
+	/**
+	 * Phase 4 / Tier 2 — when true, the synthesize stage uses the
+	 * contract-emitting variant (`synthesizeFlowWithContract`) and the
+	 * resulting `featureContract` is returned on `CompileOutput`.
+	 *
+	 * The caller (compile-inline.ts) sets this from
+	 * `isPhase4Enabled()`. Default false keeps the V1 path unchanged
+	 * for callers that haven't opted in.
+	 */
+	emitFeatureContract?: boolean;
+}
+
+export interface CompileOutput {
+	steps: FlowStep[];
+	synthesis: FlowSynthesisOutput;
+	siblings: SiblingFlowsOutput | null;
+	llmTokensUsed: number;
+	llmCostUsdMicroEstimate: number;
+	pageControls: import('@flowlens/schema').PageControlSummary[] | null;
+	/**
+	 * Present iff the caller passed `emitFeatureContract: true`. Persisted
+	 * to `flows.feature_contract` by compile-inline.ts and consumed by
+	 * `generateTestMatrixWithContract` (Tier 2b) and the two-axis
+	 * verdict aggregator (Tier 4b).
+	 */
+	featureContract: FeatureContract | null;
+}
+
+/** Drop low-information actions (scroll-only, duplicate clicks within 250ms, etc.). */
+function normalizeActions(actions: RecordedAction[]): RecordedAction[] {
+	const out: RecordedAction[] = [];
+	let lastClickKey: string | null = null;
+	let lastClickAt = -Infinity;
+	for (const a of actions) {
+		// Scroll-only with no DOM mutation hints — drop.
+		if (a.type === 'scroll') continue;
+		// Coalesce repeated clicks on the same target within 250ms.
+		if (a.type === 'click') {
+			const key = JSON.stringify(a.selectors);
+			if (key === lastClickKey && a.timestamp - lastClickAt < 250) continue;
+			lastClickKey = key;
+			lastClickAt = a.timestamp;
+		}
+		out.push(a);
+	}
+	// Re-index to be contiguous after filtering.
+	return out.map((a, i) => ({ ...a, index: i }));
+}
+
+const TOKEN_PRICE_USD_MICRO_PER_M_INPUT: Record<string, number> = {
+	'gpt-4.1-mini': 400,
+	'gpt-4.1': 2_500,
+	'o4-mini': 1_100,
+};
+const TOKEN_PRICE_USD_MICRO_PER_M_OUTPUT: Record<string, number> = {
+	'gpt-4.1-mini': 1_600,
+	'gpt-4.1': 10_000,
+	'o4-mini': 4_400,
+};
+
+function estimateCostUsdMicro(model: string, prompt: number, completion: number): number {
+	const inRate = TOKEN_PRICE_USD_MICRO_PER_M_INPUT[model] ?? 1_000;
+	const outRate = TOKEN_PRICE_USD_MICRO_PER_M_OUTPUT[model] ?? 5_000;
+	return Math.round(((prompt / 1_000_000) * inRate + (completion / 1_000_000) * outRate) * 1_000_000) / 1_000_000;
+}
+
+async function pMap<T, R>(items: T[], fn: (item: T, i: number) => Promise<R>, concurrency: number): Promise<R[]> {
+	const results: R[] = new Array(items.length);
+	let cursor = 0;
+	const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
+		while (true) {
+			const i = cursor++;
+			if (i >= items.length) return;
+			const item = items[i];
+			if (item === undefined) return;
+			results[i] = await fn(item, i);
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
+export async function compileRecording(input: CompileInput): Promise<CompileOutput> {
+	const { progress } = input;
+	let totalTokens = 0;
+	let totalCostUsdMicro = 0;
+
+	progress({ pct: 0, stage: 'normalize' });
+	const normalized = normalizeActions(input.actions);
+	if (normalized.length === 0) {
+		throw new Error('Recording contained no semantic actions after normalization.');
+	}
+	progress({ pct: 10, stage: 'normalize', detail: `${normalized.length} actions retained` });
+
+	progress({ pct: 11, stage: 'narrate', detail: 'classifying ambiguous inputs' });
+	// LLM-fallback sensitive classifier — only run on input/change actions that
+	// the regex/input-type heuristic in @flowlens/recorder-core flagged as NOT
+	// sensitive. Catches non-obvious cases (security questions, custom auth
+	// fields, etc.). Keeps cost bounded — typically 1-3 calls per recording.
+	const ambiguous = normalized.filter(
+		(a) => (a.type === 'input' || a.type === 'change') && !a.isSensitiveByHeuristic && a.value,
+	);
+	const reclassified = new Set<number>();
+	for (const a of ambiguous.slice(0, 5)) {
+		try {
+			const res = await classifySensitive({
+				fieldName: a.selectors.css ?? '',
+				fieldId: a.selectors.testid ?? '',
+				placeholder: '',
+				autocomplete: '',
+				surroundingLabelText: a.selectors.accessibleName ?? '',
+			});
+			if (res.value.isSensitive && res.value.confidence >= 0.6) {
+				reclassified.add(a.index);
+				totalTokens += res.usage.totalTokens;
+				totalCostUsdMicro += estimateCostUsdMicro(
+					res.model,
+					res.usage.promptTokens,
+					res.usage.completionTokens,
+				);
+			}
+		} catch {
+			// Best-effort; never fail the whole compile on classifier hiccups.
+		}
+	}
+
+	progress({ pct: 12, stage: 'narrate' });
+	// Rolling buffer of the most recently completed narrations (8 entries).
+	// Each narrate call finishes in unpredictable order under concurrency=4
+	// so we push by completion time, not stepIndex. The UI renders this
+	// list in completion order — feels like the AI is "discovering" the
+	// flow as it works through the screenshots.
+	const RECENT_BUFFER_LIMIT = 8;
+	const recentNarrations: NonNullable<CompileProgressEvent['recentNarrations']> = [];
+	let completed = 0;
+	const narrations = await pMap(
+		normalized,
+		async (action, i) => {
+			const currentScreenshotUrl = await input.resolveScreenshotUrl({ actionIndex: action.index });
+			if (!currentScreenshotUrl) {
+				// Skip narration for actions we have no screenshot for; we'll fall back
+				// to a heuristic intent below.
+				return { action, narration: null as NarrationOutput | null, model: '', tokens: 0 };
+			}
+			const prevAction = normalized[i - 1];
+			const prevScreenshotUrl = prevAction
+				? await input.resolveScreenshotUrl({ actionIndex: prevAction.index })
+				: null;
+
+			const res = await narrateStep({
+				prevScreenshotUrl,
+				currentScreenshotUrl,
+				actionType: action.type,
+				url: action.url,
+				pageTitle: '', // we don't capture page title per-action yet (Phase 2.5)
+				recordedValue: action.value ?? null,
+				selectors: {
+					...(action.selectors.role !== undefined ? { role: action.selectors.role } : {}),
+					...(action.selectors.accessibleName !== undefined ? { accessibleName: action.selectors.accessibleName } : {}),
+					...(action.selectors.testid !== undefined ? { testid: action.selectors.testid } : {}),
+					...(action.selectors.css !== undefined ? { css: action.selectors.css } : {}),
+				},
+			});
+			totalTokens += res.usage.totalTokens;
+			totalCostUsdMicro += estimateCostUsdMicro(res.model, res.usage.promptTokens, res.usage.completionTokens);
+
+			// Push to rolling buffer + emit. The "AI works in the open"
+			// principle (UX §1) — the user sees the decoding happen live
+			// instead of staring at a counter for 30s.
+			completed += 1;
+			recentNarrations.push({
+				stepIndex: action.index,
+				actionType: action.type,
+				intent: res.value.intent,
+				isCritical: res.value.isCritical,
+			});
+			if (recentNarrations.length > RECENT_BUFFER_LIMIT) {
+				recentNarrations.shift();
+			}
+			progress({
+				pct: 12 + Math.round((completed / normalized.length) * 60),
+				stage: 'narrate',
+				detail: `step ${completed}/${normalized.length}`,
+				recentNarrations: [...recentNarrations],
+			});
+			return { action, narration: res.value, model: res.model, tokens: res.usage.totalTokens };
+		},
+		input.narrateConcurrency ?? 4,
+	);
+
+	progress({ pct: 75, stage: 'synthesize' });
+	const synthesisInput = narrations.map(({ action, narration }) => ({
+		index: action.index,
+		actionType: action.type,
+		intent: narration?.intent ?? `${action.type} on ${action.url}`,
+		expectedOutcome: narration?.expectedOutcome ?? 'page state advances',
+		isCritical: narration?.isCritical ?? action.type !== 'scroll',
+		// Forward the richer per-step UI metadata so synthesize can ground
+		// its `description` / `preconditions` / `fragilityHints` in actual
+		// control types and recorded values, not just text intent.
+		...(action.value !== undefined && action.value !== null
+			? { recordedValue: action.value }
+			: {}),
+		...(action.controlType ? { controlType: action.controlType } : {}),
+		...(action.controlName ? { controlName: action.controlName } : {}),
+		...(action.availableOptions && action.availableOptions.length > 0
+			? { availableOptions: action.availableOptions }
+			: {}),
+	}));
+
+	// Pick the same screenshot strategy matrix-gen uses: prefer the FIRST
+	// step that interacted with a form control (shows the page layout with
+	// controls visible). Fall back to first-with-screenshot, then last.
+	let synthesisScreenshotUrl: string | null = null;
+	const firstFormStep = narrations.find(
+		({ action, narration }) =>
+			narration !== null &&
+			action.controlType !== undefined &&
+			action.controlType !== 'unknown',
+	);
+	if (firstFormStep) {
+		synthesisScreenshotUrl = await input.resolveScreenshotUrl({
+			actionIndex: firstFormStep.action.index,
+		});
+	}
+	if (!synthesisScreenshotUrl) {
+		for (const { action } of narrations) {
+			const url = await input.resolveScreenshotUrl({ actionIndex: action.index });
+			if (url) {
+				synthesisScreenshotUrl = url;
+				break;
+			}
+		}
+	}
+
+	// Phase 4 / Tier 2 — branch on the emitFeatureContract knob. Both
+	// branches share the same input shape (synthesizeFlowWithContract is
+	// a pure superset of synthesizeFlow's interface). The V1 branch stays
+	// the default until the org flips FLOWLENS_PHASE4_ENABLED.
+	let featureContract: FeatureContract | null = null;
+	const synthesisResult = input.emitFeatureContract
+		? await (async () => {
+				const r = await synthesizeFlowWithContract({
+					siteOrigin: input.siteOrigin,
+					siteModelText: input.siteModelText,
+					narratedSteps: synthesisInput,
+					pageScreenshotUrl: synthesisScreenshotUrl,
+					pageControls: input.pageControls ?? null,
+				});
+				featureContract = r.value.featureContract;
+				return { value: r.value, usage: r.usage, model: r.model };
+			})()
+		: await synthesizeFlow({
+				siteOrigin: input.siteOrigin,
+				siteModelText: input.siteModelText,
+				narratedSteps: synthesisInput,
+				pageScreenshotUrl: synthesisScreenshotUrl,
+				pageControls: input.pageControls ?? null,
+			});
+	totalTokens += synthesisResult.usage.totalTokens;
+	totalCostUsdMicro += estimateCostUsdMicro(
+		synthesisResult.model,
+		synthesisResult.usage.promptTokens,
+		synthesisResult.usage.completionTokens,
+	);
+
+	// Apply revisions returned by the synthesizer.
+	const stepRevisions = new Map(
+		synthesisResult.value.stepRevisions.map((r) => [r.index, r]),
+	);
+
+	const steps: FlowStep[] = narrations.map(({ action, narration }) => {
+		const revision = stepRevisions.get(action.index);
+		const intent = revision?.intentRevision ?? narration?.intent ?? `${action.type} on ${action.url}`;
+		const expected =
+			revision?.expectedOutcomeRevision ?? narration?.expectedOutcome ?? 'page state advances';
+		const isSensitive = action.isSensitiveByHeuristic || reclassified.has(action.index);
+		return {
+			index: action.index,
+			action: actionTypeToFlowStep(action.type),
+			intent,
+			expectedOutcome: expected,
+			isCritical: narration?.isCritical ?? action.type !== 'scroll',
+			selectors: action.selectors,
+			...(action.value !== undefined && !isSensitive ? { recordedValue: action.value } : {}),
+			isSensitive,
+			recordedScreenshotKey: action.screenshotKey ?? '',
+			...(action.url ? { url: action.url } : {}),
+		};
+	});
+
+	progress({ pct: 90, stage: 'siblings' });
+	let siblings: SiblingFlowsOutput | null = null;
+	if (!input.skipSiblings) {
+		try {
+			const sib = await suggestSiblingFlows({
+				siteOrigin: input.siteOrigin,
+				parentFlow: { name: synthesisResult.value.name, description: synthesisResult.value.description },
+				steps: steps.map((s) => ({
+					intent: s.intent,
+					expectedOutcome: s.expectedOutcome,
+					isCritical: s.isCritical,
+				})),
+			});
+			siblings = sib.value;
+			totalTokens += sib.usage.totalTokens;
+			totalCostUsdMicro += estimateCostUsdMicro(sib.model, sib.usage.promptTokens, sib.usage.completionTokens);
+		} catch (err) {
+			// Sibling generation is opt-in; never fail the whole compile if it errors.
+			progress({
+				pct: 92,
+				stage: 'siblings',
+				detail: `sibling generation skipped: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	progress({ pct: 100, stage: 'persist' });
+	return {
+		steps,
+		synthesis: synthesisResult.value,
+		siblings,
+		llmTokensUsed: totalTokens,
+		llmCostUsdMicroEstimate: Math.round(totalCostUsdMicro * 1_000_000),
+		pageControls: input.pageControls ?? null,
+		featureContract,
+	};
+}
+
+function actionTypeToFlowStep(t: RecordedAction['type']): FlowStep['action'] {
+	switch (t) {
+		case 'change':
+			return 'input';
+		case 'submit':
+			return 'click';
+		case 'navigate':
+			return 'navigate';
+		case 'click':
+			return 'click';
+		case 'input':
+			return 'input';
+		case 'keypress':
+			return 'keypress';
+		case 'scroll':
+			return 'scroll';
+		default:
+			return 'click';
+	}
+}

@@ -18,6 +18,9 @@ export default function Home() {
     "idle"
   );
   const [scanError, setScanError] = useState("");
+  const [showCreds, setShowCreds] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const router = useRouter();
 
   // Autocomplete state
@@ -130,10 +133,14 @@ export default function Home() {
     setShowSuggestions(false);
 
     try {
+      const body: Record<string, unknown> = { url: v, max_pages: 10 };
+      if (email || password) {
+        body.credentials = { email, password };
+      }
       const res = await fetch(`${API_URL}/api/v1/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: v, max_pages: 10 }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.scan_id) {
@@ -585,7 +592,93 @@ export default function Home() {
                     )}
                   </div>
 
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, padding: "0 20px" }}>
+                  {/* Credential toggle */}
+                  <div style={{ marginTop: 12, padding: "0 20px" }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreds(!showCreds)}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        fontSize: 11,
+                        color: "var(--gray)",
+                        padding: 0,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontFamily: "'IBM Plex Mono', monospace",
+                        letterSpacing: "0.03em",
+                      }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        {showCreds
+                          ? <polyline points="2,4 5,7 8,4" />
+                          : <polyline points="4,2 7,5 4,8" />}
+                      </svg>
+                      {showCreds ? "Hide login credentials" : "Site requires login?"}
+                    </button>
+
+                    {showCreds && (
+                      <div style={{
+                        marginTop: 10,
+                        padding: "14px 16px",
+                        background: "#f9f9f8",
+                        borderRadius: 10,
+                        border: "1px solid #e8e8e8",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 8,
+                      }}>
+                        <p style={{ fontSize: 11, color: "var(--gray)", margin: 0, lineHeight: 1.5 }}>
+                          Credentials are used by the AI agent to log in autonomously. They are never stored.
+                        </p>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <input
+                            type="email"
+                            placeholder="Email / Username"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            disabled={scanState === "loading"}
+                            autoComplete="off"
+                            style={{
+                              flex: 1,
+                              padding: "10px 12px",
+                              border: "1px solid #ddd",
+                              borderRadius: 6,
+                              fontFamily: "'IBM Plex Mono', monospace",
+                              fontSize: 12,
+                              outline: "none",
+                              background: "#fff",
+                            }}
+                          />
+                          <input
+                            type="password"
+                            placeholder="Password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            disabled={scanState === "loading"}
+                            autoComplete="off"
+                            style={{
+                              flex: 1,
+                              padding: "10px 12px",
+                              border: "1px solid #ddd",
+                              borderRadius: 6,
+                              fontFamily: "'IBM Plex Mono', monospace",
+                              fontSize: 12,
+                              outline: "none",
+                              background: "#fff",
+                            }}
+                          />
+                        </div>
+                        <p style={{ fontSize: 10, color: "#b0b0b0", margin: 0, lineHeight: 1.4 }}>
+                          No credentials? The agent will test public content, or you can log in manually during the scan.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, padding: "0 20px" }}>
                     <p style={{ fontSize: 11, color: "var(--gray)" }}>
                       No signup required
                     </p>

@@ -1,0 +1,141 @@
+@import 'tailwindcss';
+@import '@flowlens/design-tokens/tokens.css';
+
+@layer base {
+	html,
+	body {
+		font-family: var(--font-sans);
+		background: var(--color-fl-white);
+		color: var(--color-fl-black);
+		font-size: 13px;
+		line-height: 1.55;
+		font-feature-settings: 'ss01', 'cv01', 'cv11';
+	}
+
+	* {
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	::selection {
+		background: var(--color-fl-black);
+		color: var(--color-fl-white);
+	}
+
+	button,
+	input,
+	textarea,
+	select {
+		font-family: inherit;
+	}
+
+	/* Focus ring — visible, dark green outline */
+	:where(button, [role='button'], a, input, textarea, select, [tabindex]):focus-visible {
+		outline: none;
+		box-shadow: var(--shadow-fl-focus);
+		border-radius: 1px;
+	}
+
+	/* Slim scrollbar that fits the terminal aesthetic */
+	::-webkit-scrollbar {
+		width: 8px;
+		height: 8px;
+	}
+	::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	::-webkit-scrollbar-thumb {
+		background: var(--color-fl-light);
+		border-radius: 0;
+	}
+	::-webkit-scrollbar-thumb:hover {
+		background: var(--color-fl-line);
+	}
+}
+
+/* Side panel is 400px wide in Chrome, so root needs full width */
+#root {
+	width: 100%;
+	min-height: 100vh;
+}
+
+/* Animations */
+@keyframes fl-shimmer {
+	0% {
+		background-position: -120% 0;
+	}
+	100% {
+		background-position: 120% 0;
+	}
+}
+.fl-shimmer {
+	background-image: linear-gradient(
+		90deg,
+		var(--color-fl-soft) 0%,
+		var(--color-fl-light) 50%,
+		var(--color-fl-soft) 100%
+	);
+	background-size: 200% 100%;
+	animation: fl-shimmer 1.4s linear infinite;
+}
+
+@keyframes fl-pulse-rec {
+	0%,
+	100% {
+		transform: scale(1);
+		box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55);
+	}
+	50% {
+		transform: scale(1.08);
+		box-shadow: 0 0 0 8px rgba(220, 38, 38, 0);
+	}
+}
+.fl-pulse-rec {
+	animation: fl-pulse-rec 2s var(--ease-fl-out) infinite;
+}
+
+@keyframes fl-stage-pulse {
+	0%,
+	100% {
+		opacity: 0.6;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+.fl-stage-pulse {
+	animation: fl-stage-pulse 1.4s var(--ease-fl-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.fl-shimmer,
+	.fl-pulse-rec,
+	.fl-stage-pulse {
+		animation: none !important;
+	}
+	* {
+		transition-duration: 0.01ms !important;
+		animation-duration: 0.01ms !important;
+	}
+}
+
+/* Subtle hairline divider helper */
+.fl-hairline {
+	background-image: linear-gradient(
+		to right,
+		var(--color-fl-light) 0,
+		var(--color-fl-light) 4px,
+		transparent 4px,
+		transparent 8px
+	);
+	background-size: 8px 1px;
+	background-repeat: repeat-x;
+	background-position: 0 50%;
+}
+
+/* Hide native number-input spinners inside dense panels */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+	-webkit-appearance: none;
+	margin: 0;
+}
